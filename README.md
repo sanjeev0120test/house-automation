@@ -1,4 +1,4 @@
-# Mi TV — ADB WiFi Remote
+# TV - ADB WiFi 
 
 Control your Mi Android TV from this laptop over the same WiFi network.
 
