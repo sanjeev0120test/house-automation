@@ -1,4 +1,4 @@
-# House Automation — Mi TV Remote
+# House Automation - TV
 
 Control a Mi Android TV from a Windows laptop over WiFi using Python and ADB. Tested on **MiTV_AXSO2** with Network debugging enabled.
 
