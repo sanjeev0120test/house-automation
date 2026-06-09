@@ -1,4 +1,4 @@
-# House Automation — Android TV Remote
+# House Automation - TV
 
 Control an Android TV from your computer over WiFi using Python and ADB. Tested on Android TV with Network debugging enabled.
 
