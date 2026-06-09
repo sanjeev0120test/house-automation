@@ -41,10 +41,18 @@ def keyevent(code: int) -> None:
     run("shell", "input", "keyevent", str(code))
 
 
+def shell(cmd: str, check: bool = True) -> str:
+    result = run("shell", cmd, check=check)
+    return result.stdout.strip()
+
+
+def pull(remote: str, local: str) -> None:
+    run("pull", remote, local)
+
+
 def ensure_connected() -> None:
-    cfg = _load_config()
-    target = f"{cfg['host']}:{cfg['port']}"
-    if target not in devices():
-        msg = connect()
-        if "failed" in msg.lower() or "unable" in msg.lower():
-            raise RuntimeError(f"Could not connect to {target}: {msg}")
+    if is_connected():
+        return
+    msg = connect()
+    if not is_connected():
+        raise RuntimeError(f"Could not connect: {msg}")

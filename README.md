@@ -13,7 +13,7 @@ cd c:\dev\house-automation
 python -m tv_remote.cli
 ```
 
-Type **1–5** to control the TV. Type **q** to quit.
+Type **1–18** to control the TV. Type **q** to quit.
 
 ## TV setup (one time)
 
@@ -41,6 +41,19 @@ Put that IP in `config/tv.json` (local file, not in git):
 | 3 | Volume Up |
 | 4 | Volume Down |
 | 5 | OK / Select |
+| 6 | YouTube |
+| 7 | Netflix |
+| 8 | Prime Video |
+| 9 | Hotstar |
+| 10 | SonyLIV |
+| 11 | JioCinema |
+| 12 | Play / Pause |
+| 13 | Screenshot (saved locally) |
+| 14 | Eminem on YouTube (auto-search + play) |
+| 15 | Enrique on YouTube (auto-search + play) |
+| 16 | YouTube search — type any song or topic |
+| 17 | Skip forward ~30s (while playing) |
+| 18 | Now playing — show current title |
 | q | Quit |
 
 Connects automatically when you start the CLI.
