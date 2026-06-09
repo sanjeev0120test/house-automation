@@ -1,0 +1,5 @@
+tools/platform-tools/
+tv_screenshot.png
+config/tv.json
+__pycache__/
+*.pyc
