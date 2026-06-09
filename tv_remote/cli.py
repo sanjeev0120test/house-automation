@@ -18,12 +18,16 @@ MENU = """
 """
 
 
+def _youtube_preset(query: str) -> None:
+    keys.youtube_search_play(query)
+    print(f"Playing first result for: {query}")
+
+
 def _youtube_custom_search() -> None:
     query = input("Search YouTube for: ").strip()
     if not query:
         raise ValueError("Search text cannot be empty")
-    keys.youtube_search_play(query)
-    print(f"Playing first result for: {query}")
+    _youtube_preset(query)
 
 
 def _now_playing() -> None:
@@ -44,14 +48,14 @@ ACTIONS = {
     "11": ("JioCinema", lambda: keys.launch_app("jio")),
     "12": ("Play / Pause", keys.play_pause),
     "13": ("Screenshot", lambda: print(f"Saved: {keys.screenshot()}")),
-    "14": ("Eminem on YouTube", keys.play_eminem_hit),
-    "15": ("Enrique on YouTube", keys.play_enrique_hit),
+    "14": ("Eminem on YouTube", lambda: _youtube_preset("eminem not afraid official")),
+    "15": ("Enrique on YouTube", lambda: _youtube_preset("enrique iglesias hero official")),
     "16": ("YouTube search", _youtube_custom_search),
     "17": ("Skip forward", keys.skip_forward),
     "18": ("Now playing", _now_playing),
 }
 
-QUIET_OK = {"13", "16", "18"}
+QUIET_OK = {"13", "14", "15", "16", "18"}
 
 
 def _connect() -> None:

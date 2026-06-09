@@ -16,7 +16,14 @@ def _load_config() -> dict:
 
 def run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     cmd = [str(ADB), *args]
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=check,
+    )
 
 
 def connect() -> str:
@@ -43,7 +50,11 @@ def keyevent(code: int) -> None:
 
 def shell(cmd: str, check: bool = True) -> str:
     result = run("shell", cmd, check=check)
-    return result.stdout.strip()
+    return (result.stdout or "").strip()
+
+
+def tap(x: int, y: int) -> None:
+    run("shell", "input", "tap", str(x), str(y))
 
 
 def pull(remote: str, local: str) -> None:

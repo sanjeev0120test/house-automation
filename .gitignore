@@ -1,5 +1,6 @@
 tools/platform-tools/
-tv_screenshot.png
+tv_screenshot*.png
+tv_validate_screenshot.png
 config/tv.json
 __pycache__/
 *.pyc
