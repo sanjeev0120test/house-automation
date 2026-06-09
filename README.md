@@ -1,140 +1,369 @@
 # House Automation — Mi TV Remote
 
-Your laptop becomes a smart remote for a Mi Android TV over WiFi. No IR blaster, no extra hardware — just Python, ADB, and the same network your TV already uses.
+Control a Mi Android TV from a Windows laptop over WiFi using Python and ADB. Tested on **MiTV_AXSO2** with Network debugging enabled.
 
-Type a number. The TV responds.
+```powershell
+copy config\tv.json.example config\tv.json   # once: set YOUR_TV_IP
+.\scripts\check_connection.ps1               # verify network + ADB
+python -m tv_remote.cli                      # run the numbered remote
+python scripts\validate_remote.py            # optional: test all 18 options
+```
 
-## What makes this different
+**Requirements:** Python 3.10+, [Android platform-tools](https://developer.android.com/tools/releases/platform-tools) at `tools\platform-tools\adb.exe`, TV and laptop on the same WiFi, `config/tv.json` with your TV IP (gitignored).
 
-Most “TV remotes” stop at volume and home. This one goes further:
+---
 
-- **Instant app launch** — YouTube, Netflix, Prime, Hotstar, SonyLIV, JioCinema open with one keypress.
-- **Smart YouTube search** — Type any song or topic; the tool resolves the **top YouTube search result** on your PC and opens it directly on the TV (no fragile arrow-key navigation through result rows).
-- **Ad skip watcher** — After a video starts, a background thread watches for an enabled **Skip ad** button and taps it automatically when it appears.
-- **Now playing** — Reads the active media session from the TV so you always know what’s on.
+## Table of contents
 
-Everything runs locally. Your TV IP never leaves your machine.
+- [Overview](#overview)
+- [One-time setup](#one-time-setup)
+- [Remote menu](#remote-menu)
+- [Architecture](#architecture)
+- [YouTube search and ad skip](#youtube-search-and-ad-skip)
+- [Validation](#validation)
+- [Issues found and fixes](#issues-found-and-fixes)
+- [What else ADB can automate](#what-else-adb-can-automate)
+- [Wireless debugging (pairing)](#wireless-debugging-pairing)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+- [Project layout](#project-layout)
 
-## Quick start
+---
+
+## Overview
+
+This project exposes a numbered CLI menu that sends ADB commands to the TV. No IR blaster, no cloud service, no third-party Python packages — only the standard library plus a local ADB binary.
+
+On startup the CLI reads `config/tv.json`, runs `adb connect`, and waits for menu input. Each option maps to one function in `tv_remote/keys.py` that calls `adb shell`, `adb shell input keyevent`, or `adb shell am start`.
+
+**Verified app packages on MiTV_AXSO2** (defined in `tv_remote/keys.py`):
+
+| Short name | Package |
+|------------|---------|
+| youtube | `com.google.android.youtube.tv` |
+| netflix | `com.netflix.ninja` |
+| prime | `com.amazon.amazonvideo.livingroom` |
+| hotstar | `in.startv.hotstar` |
+| sonyliv | `com.sonyliv` |
+| jio | `com.jio.media.stb.ondemand` |
+
+Other Mi TV models may have different package names. Confirm with:
+
+```powershell
+.\tools\platform-tools\adb.exe shell pm list packages | findstr /i "youtube netflix hotstar jio sony amazon"
+```
+
+---
+
+## One-time setup
+
+### On the TV
+
+| Step | Path |
+|------|------|
+| Enable Developer options | Settings → Device Preferences → About → click **Build** 7 times |
+| USB debugging | Developer options → **ON** |
+| Network debugging | Developer options → **ON** (default ADB port **5555**) |
+| Authorize this laptop | When prompted on TV, tap **Always allow** |
+
+Read the TV IP: **Settings → Network → WiFi → [your network] → IP address**.
+
+### On the laptop
+
+1. Install [Android platform-tools](https://developer.android.com/tools/releases/platform-tools) and place `adb.exe` under `tools\platform-tools\` (this path is gitignored).
+2. Copy the config template and set your IP:
 
 ```powershell
 cd c:\dev\house-automation
-copy config\tv.json.example config\tv.json   # then edit with your TV IP
-python -m tv_remote.cli
+copy config\tv.json.example config\tv.json
+notepad config\tv.json
 ```
-
-Type **1–18** to control the TV. Type **q** to quit.
-
-## One-time TV setup
-
-| Step | On Mi TV |
-|------|----------|
-| Developer options | Settings → Device Preferences → About → click **Build** 7× |
-| USB debugging | Developer options → **ON** |
-| Network debugging | Developer options → **ON** (opens ADB port 5555) |
-| Allow prompt | When asked, tap **Always allow** |
-
-Find your TV IP under **Settings → Network → WiFi → [your network] → IP address**, then put it in `config/tv.json`:
 
 ```json
 {"host": "YOUR_TV_IP", "port": 5555}
 ```
 
-Use `config/tv.json.example` as a template — the real file is gitignored.
-
-## Remote menu
-
-| Key | What it does |
-|-----|----------------|
-| 1 | Home |
-| 2 | Back |
-| 3 | Volume up |
-| 4 | Volume down |
-| 5 | OK / Select |
-| 6 | Open YouTube |
-| 7 | Open Netflix |
-| 8 | Open Prime Video |
-| 9 | Open Hotstar |
-| 10 | Open SonyLIV |
-| 11 | Open JioCinema |
-| 12 | Play / Pause |
-| 13 | Screenshot (saved locally) |
-| 14 | Play Eminem on YouTube (first search result) |
-| 15 | Play Enrique on YouTube (first search result) |
-| 16 | YouTube search — type anything, plays #1 result |
-| 17 | Skip forward ~30 s |
-| 18 | Show now playing title |
-| q | Quit |
-
-The CLI connects automatically on startup.
-
-## How YouTube search works
-
-```
-You type "cocomelon"
-        ↓
-Laptop fetches youtube.com search results (first video ID)
-        ↓
-ADB opens youtube.com/watch?v=… directly on the TV
-        ↓
-Background thread polls for "Skip ad" and taps when ready
-```
-
-No more landing on the second row of search results — the top hit plays every time.
-
-## Validate everything
-
-Run the full test suite against your connected TV:
-
-```powershell
-python scripts\validate_remote.py
-```
-
-Checks all 18 options: app launches, volume, YouTube search, presets, skip forward, and now playing.
-
-Or just ping the connection:
+3. Confirm connectivity:
 
 ```powershell
 .\scripts\check_connection.ps1
 ```
 
-## Wireless debugging (no “Network debugging” toggle)
+Expected: ping succeeds, TCP port open, `adb devices` shows `YOUR_TV_IP:5555    device`.
 
-Use the IP, pairing port, and code shown on the TV:
+4. Start the remote:
+
+```powershell
+python -m tv_remote.cli
+```
+
+Type **1–18** to act, **q** to quit.
+
+---
+
+## Remote menu
+
+| Key | Action | ADB mechanism |
+|-----|--------|---------------|
+| 1 | Home | `input keyevent 3` |
+| 2 | Back | `input keyevent 4` |
+| 3 | Volume up | `input keyevent 24` |
+| 4 | Volume down | `input keyevent 25` |
+| 5 | OK / Select | `input keyevent 23` |
+| 6 | Open YouTube | `monkey -p com.google.android.youtube.tv …` |
+| 7 | Open Netflix | `monkey -p com.netflix.ninja …` |
+| 8 | Open Prime Video | `monkey -p com.amazon.amazonvideo.livingroom …` |
+| 9 | Open Hotstar | `monkey -p in.startv.hotstar …` |
+| 10 | Open SonyLIV | `monkey -p com.sonyliv …` |
+| 11 | Open JioCinema | `am start -n com.jio.media.stb.ondemand/com.v18.voot.ui.JVHomeActivity` |
+| 12 | Play / Pause | `input keyevent 85` |
+| 13 | Screenshot | `screencap` on device → `adb pull` to local file |
+| 14 | Eminem on YouTube | YouTube search preset → first result |
+| 15 | Enrique on YouTube | YouTube search preset → first result |
+| 16 | YouTube search | Prompt for query → first result |
+| 17 | Skip forward ~30 s | `input keyevent 272` (`KEYCODE_MEDIA_SKIP_FORWARD`) |
+| 18 | Now playing | Parse `dumpsys media_session` for active playback |
+| q | Quit | Exit CLI |
+
+Options **14–16** print `Playing first result for: …` instead of `OK: …`.
+
+---
+
+## Architecture
+
+```
+┌─────────────┐     WiFi (TCP 5555)     ┌──────────────────┐
+│   Laptop    │ ◄──────────────────────►│  Mi Android TV   │
+│             │                         │                  │
+│ tv_remote/  │   adb connect / shell   │  YouTube, Netflix│
+│  cli.py     │   input keyevent        │  Prime, etc.     │
+│  keys.py    │   am start (intents)    │                  │
+│  adb.py     │   dumpsys / screencap   │                  │
+└─────────────┘                         └──────────────────┘
+       │
+       │  YouTube search only:
+       ▼
+  HTTP GET youtube.com/results  →  extract first videoId  →  open watch URL on TV
+```
+
+| Module | Responsibility |
+|--------|----------------|
+| `tv_remote/adb.py` | Load `config/tv.json`, run `adb.exe`, connect, keyevent, shell, tap, pull |
+| `tv_remote/keys.py` | Remote actions, app launch, YouTube resolve/play, ad-skip thread, now playing |
+| `tv_remote/cli.py` | Numbered menu loop and error handling |
+| `scripts/check_connection.ps1` | Ping, TCP port, `adb connect`, `adb devices` |
+| `scripts/validate_remote.py` | Automated pass/fail test for all menu options |
+
+---
+
+## YouTube search and ad skip
+
+### Search (options 14, 15, 16)
+
+**Previous behaviour (broken):** open `youtube.com/results?search_query=…` on the TV, wait, send **DOWN**, then **OK**. On MiTV_AXSO2 focus was already on the first result; **DOWN** moved to the **second row**.
+
+**Current behaviour (fixed):**
+
+1. Laptop fetches `https://www.youtube.com/results?search_query=…`
+2. Parses `ytInitialData` JSON for the first `videoRenderer.videoId`
+3. Opens `https://www.youtube.com/watch?v=VIDEO_ID` on the TV via `am start -a android.intent.action.VIEW`
+
+This plays the same top result YouTube shows in a browser search, without DPAD navigation.
+
+### Ad skip (background thread)
+
+After playback starts, a daemon thread runs for **90 seconds** and every **2 seconds**:
+
+1. Runs `uiautomator dump` and looks for an enabled node matching `skip ad` (case-insensitive)
+2. If found, taps the button centre via `input tap X Y`
+3. If not found, sends **RIGHT** once and re-checks
+4. Falls back to title heuristics in the first 30 s (sponsored keywords or title mismatch vs expected)
+
+**Limitation (observed on MiTV_AXSO2):** YouTube TV renders most UI in custom views. `uiautomator dump` often returns minimal nodes during playback, so ad skip works when the Skip Ad button is exposed in the accessibility tree. It does not skip unskippable ads.
+
+---
+
+## Validation
+
+Run the full suite (takes ~3 minutes; switches apps and plays YouTube):
+
+```powershell
+python scripts\validate_remote.py
+```
+
+Last verified run: **17 pass, 0 warn, 0 fail** — all menu options including six app launches, volume, YouTube search, presets, skip forward, and now playing.
+
+The script checks foreground app via `dumpsys activity activities` (`mResumedActivity`), volume via `dumpsys audio`, and playback via `now_playing()`.
+
+Quick connection check only:
+
+```powershell
+.\scripts\check_connection.ps1
+```
+
+Manual ADB check:
+
+```powershell
+.\tools\platform-tools\adb.exe devices
+.\tools\platform-tools\adb.exe shell dumpsys media_session
+```
+
+---
+
+## Issues found and fixes
+
+Each item below was reproduced on hardware, diagnosed with ADB, and fixed in code.
+
+### 1. YouTube search played the second result
+
+| | |
+|---|---|
+| **Symptom** | Searching for a song opened search results, then played the wrong (second) video |
+| **Diagnosis** | Opened search URL + `keyevent DOWN` + `keyevent OK`. TV focus was already on row 1; DOWN selected row 2 |
+| **Fix** | Resolve first `videoId` on the laptop; open `watch?v=` URL directly. Removed DPAD navigation from search flow |
+| **File** | `tv_remote/keys.py` — `_first_youtube_result()`, `youtube_search_play()` |
+
+### 2. JioCinema did not come to foreground
+
+| | |
+|---|---|
+| **Symptom** | Option 11 reported success but SonyLIV (previous app) stayed active |
+| **Diagnosis** | `monkey -p com.jio.media.stb.ondemand …` injected events but did not reliably resume JioCinema. Package exists: confirmed via `pm list packages`. Launch activity resolved via `cmd package resolve-activity`: `com.v18.voot.ui.JVHomeActivity` |
+| **Fix** | Use explicit `am start -n com.jio.media.stb.ondemand/com.v18.voot.ui.JVHomeActivity` for JioCinema; keep `monkey` for other apps |
+| **File** | `tv_remote/keys.py` — `APP_ACTIVITIES`, `launch_app()` |
+
+### 3. Now playing showed stale or wrong title
+
+| | |
+|---|---|
+| **Symptom** | Option 18 returned the first `description=` line in `dumpsys media_session`, not the actively playing track |
+| **Diagnosis** | Multiple apps register media sessions (YouTube, Netflix, Prime). Idle sessions still had metadata |
+| **Fix** | Parse sessions by `package=`, read `state=` (prefer `state=3` = playing), then read `description=` |
+| **File** | `tv_remote/keys.py` — `now_playing()` |
+
+### 4. Crash on Unicode titles (Windows)
+
+| | |
+|---|---|
+| **Symptom** | `UnicodeDecodeError` / `AttributeError` when ad-skip thread called `now_playing()` during tracks with emoji titles |
+| **Diagnosis** | `subprocess.run(..., text=True)` defaulted to cp1252 on Windows; ADB output contained UTF-8 emoji |
+| **Fix** | Set `encoding="utf-8", errors="replace"` on all ADB subprocess calls; guard `stdout` with `(result.stdout or "")` |
+| **File** | `tv_remote/adb.py` |
+
+### 5. Validation false failures for app launch
+
+| | |
+|---|---|
+| **Symptom** | Test script reported wrong foreground package (e.g. `t8216` instead of package name) |
+| **Diagnosis** | Parsed last token of `mResumedActivity` line; on Mi TV the task id (`t8216`) is last, not the package |
+| **Fix** | Regex `u0\s+([\w.]+)/` on the `mResumedActivity` line. Added `home()` before each app launch test to avoid stale foreground |
+| **File** | `scripts/validate_remote.py` |
+
+### 6. Screenshots saved but appear black
+
+| | |
+|---|---|
+| **Symptom** | Option 13 writes a PNG file; image is black during streaming |
+| **Diagnosis** | HDCP-protected content on Mi TV blocks pixel capture in `screencap` — file is valid, pixels are blank |
+| **Status** | Expected behaviour on protected content; not a code bug. Screenshots outside DRM apps may show content |
+
+---
+
+## What else ADB can automate
+
+### Implemented in this repo
+
+| Capability | How |
+|------------|-----|
+| D-pad and media keys | `adb shell input keyevent <code>` |
+| Launch leanback apps | `monkey -p PACKAGE -c android.intent.category.LEANBACK_LAUNCHER 1` |
+| Deep-link into content | `am start -a android.intent.action.VIEW -d "URL" PACKAGE` |
+| Query playback state | `dumpsys media_session` |
+| Query foreground app | `dumpsys activity activities` |
+| Screen capture | `screencap` + `adb pull` |
+| UI inspection / tap | `uiautomator dump` + `input tap X Y` |
+| Background polling | Python `threading` daemon for ad-skip watcher |
+
+### Not implemented — same ADB pattern could support
+
+These are **not** in the codebase today. They use the same `adb shell` / `input` / `am start` building blocks:
+
+| Use case | Typical ADB approach |
+|----------|---------------------|
+| Scheduled playback | Windows Task Scheduler or cron calling `python -c "from tv_remote import keys; keys.youtube_search_play('…')"` |
+| Home Assistant / Node-RED | HTTP webhook → small Python script → `tv_remote.keys` functions |
+| Wake TV before command | Wake-on-LAN magic packet to TV MAC, then `adb connect` (WoL not in this repo) |
+| Text input / login flows | `adb shell input text '…'` or `input keyevent` per character |
+| Install or sideload APKs | `adb install app.apk` |
+| Logcat-triggered automation | `adb logcat` pipe → parse lines → call key functions on match |
+| Multi-TV control | Multiple entries in config; pass host to `adb -s IP:PORT shell …` (would need code change) |
+| Custom app shortcuts | Add package to `APPS` in `keys.py`; resolve activity with `cmd package resolve-activity --brief PACKAGE` |
+
+To add a new streaming app: confirm the package name on your TV, add it to `APPS`, and if `monkey` fails, add an entry to `APP_ACTIVITIES` using the resolved activity name.
+
+---
+
+## Wireless debugging (pairing)
+
+If your TV shows a **pairing code** instead of a plain port-5555 connect:
 
 ```powershell
 .\tools\platform-tools\adb.exe pair YOUR_TV_IP:PAIR_PORT
+# enter the 6-digit code shown on TV when prompted
+
 .\tools\platform-tools\adb.exe connect YOUR_TV_IP:DEBUG_PORT
 ```
 
-Update `port` in `config/tv.json` to the debug port.
+Update `port` in `config/tv.json` to the **debug port** (not the pairing port).
+
+---
+
+## Security
+
+- `config/tv.json` is **gitignored** — never commit your TV IP, pairing codes, or WiFi details.
+- ADB access requires physical approval on the TV ("Always allow this computer").
+- All traffic stays on your local network; no telemetry or external API except YouTube search HTTP from the laptop during options 14–16.
+- `tools/platform-tools/` is gitignored; download platform-tools from the official Android developer site.
+
+---
+
+## Troubleshooting
+
+| Problem | Steps |
+|---------|-------|
+| `Missing config/tv.json` | `copy config\tv.json.example config\tv.json` and set `host` |
+| `Cannot connect` / timeout | Wake TV; same WiFi; confirm IP in TV Settings; enable Network debugging |
+| `unauthorized` in `adb devices` | Accept the RSA prompt on the TV |
+| `adb.exe` not found | Install platform-tools to `tools\platform-tools\adb.exe` |
+| App launch fails | Run `pm list packages \| findstr APPNAME`; update `APPS` in `keys.py` |
+| JioCinema stuck | Confirm activity: `adb shell cmd package resolve-activity --brief com.jio.media.stb.ondemand` |
+| YouTube plays wrong video | Should not occur with watch-URL flow; run `python scripts\validate_remote.py` |
+| Ad not skipped | Skip button may not appear in UI dump on YouTube TV; unskippable ads cannot be bypassed |
+| Screenshot is black | HDCP on streaming apps — expected |
+| Unicode error on Windows | Fixed in `adb.py`; pull latest code |
+
+---
 
 ## Project layout
 
 ```
 house-automation/
-├── config/tv.json.example   # template (copy → tv.json)
+├── config/
+│   ├── tv.json.example      # template (copy → tv.json)
+│   └── tv.json              # your IP — gitignored
 ├── tv_remote/
-│   ├── adb.py               # ADB connection + shell/keyevents
-│   ├── keys.py              # remote actions + YouTube logic
-│   └── cli.py               # numbered menu
-└── scripts/
-    ├── check_connection.ps1
-    └── validate_remote.py
+│   ├── adb.py               # ADB wrapper (connect, shell, keyevent, tap)
+│   ├── keys.py              # remote actions, YouTube logic, ad skip
+│   └── cli.py               # numbered menu (options 1–18)
+├── scripts/
+│   ├── check_connection.ps1 # network + ADB smoke test
+│   └── validate_remote.py   # automated test for all 18 options
+└── tools/
+    └── platform-tools/      # adb.exe — gitignored, install locally
 ```
 
-## Security
+---
 
-- **`config/tv.json` is gitignored** — your TV IP stays on this machine only.
-- Do not commit WiFi names, IPs, pairing codes, or router details.
-- ADB access is limited to devices you explicitly authorize on the TV.
+## License
 
-## Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| Cannot connect | Wake TV; confirm IP in TV Settings; enable Network debugging |
-| Unauthorized | Accept the debug prompt on the TV |
-| Timeout | Same WiFi as laptop; TV not in deep sleep |
-| Screenshot is black | HDCP-protected content — normal on streaming apps |
-| JioCinema won’t open | Re-run validation; app uses an explicit launch activity |
+See [LICENSE](LICENSE) in the repository root.
