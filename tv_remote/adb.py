@@ -30,6 +30,13 @@ def devices() -> str:
     return run("devices", check=False).stdout.strip()
 
 
+def is_connected() -> bool:
+    cfg = _load_config()
+    target = f"{cfg['host']}:{cfg['port']}"
+    lines = devices().splitlines()[1:]
+    return any(target in line and "\tdevice" in line for line in lines)
+
+
 def keyevent(code: int) -> None:
     run("shell", "input", "keyevent", str(code))
 

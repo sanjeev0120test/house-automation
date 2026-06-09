@@ -1,53 +1,56 @@
-"""Interactive CLI to control Mi TV over ADB."""
+"""Simple numbered menu — type 1-5 to control Mi TV."""
 
 from tv_remote import adb, keys
+
+MENU = """
+=== Mi TV Remote ===
+ 1  Home
+ 2  Back
+ 3  Volume Up
+ 4  Volume Down
+ 5  OK / Select
+ q  Quit
+"""
 
 ACTIONS = {
     "1": ("Home", keys.home),
     "2": ("Back", keys.back),
     "3": ("Volume Up", keys.volume_up),
     "4": ("Volume Down", keys.volume_down),
-    "5": ("D-Pad Up", keys.dpad_up),
-    "6": ("D-Pad Down", keys.dpad_down),
-    "7": ("D-Pad Left", keys.dpad_left),
-    "8": ("D-Pad Right", keys.dpad_right),
-    "9": ("OK / Select", keys.ok),
-    "0": ("Power", keys.power),
-    "c": ("Connect", lambda: print(adb.connect())),
-    "d": ("Devices", lambda: print(adb.devices())),
+    "5": ("OK / Select", keys.ok),
 }
 
-MENU = """
-=== Mi TV Remote (ADB over WiFi) ===
- 1 Home       2 Back       3 Vol+       4 Vol-
- 5 Up         6 Down       7 Left       8 Right
- 9 OK         0 Power      c Connect    d Devices
- q Quit
-"""
+
+def _connect() -> None:
+    print(adb.connect())
+    if adb.is_connected():
+        print("Connected.")
+    else:
+        print("Not connected — verify IP in config/tv.json and Network debugging on TV.")
+        print(adb.devices())
 
 
 def main() -> None:
     print(MENU)
-    print("Tip: enable USB + Network debugging on TV first.")
-    try:
-        print(adb.connect())
-    except Exception as exc:
-        print(f"Connect skipped: {exc}")
+    _connect()
 
     while True:
         choice = input("> ").strip().lower()
         if choice in ("q", "quit", "exit"):
+            print("Bye.")
             break
         action = ACTIONS.get(choice)
         if not action:
-            print("Unknown key. Use 1-9, 0, c, d, or q.")
+            print("Enter 1, 2, 3, 4, 5, or q.")
             continue
         label, fn = action
         try:
             fn()
-            print(f"Sent: {label}")
+            print(f"OK: {label}")
         except Exception as exc:
-            print(f"Failed ({label}): {exc}")
+            print(f"Failed: {exc}")
+            print("Retrying connect...")
+            _connect()
 
 
 if __name__ == "__main__":
