@@ -113,53 +113,56 @@ def screenshot(path: str = "tv_screenshot.png") -> str:
     return path
 
 
-def _extract_first_video_id(data: object) -> str | None:
+def _iter_video_renderers(data: object):
     if isinstance(data, dict):
         renderer = data.get("videoRenderer")
-        if isinstance(renderer, dict):
-            video_id = renderer.get("videoId")
-            if isinstance(video_id, str) and video_id:
-                return video_id
+        if isinstance(renderer, dict) and isinstance(renderer.get("videoId"), str):
+            yield renderer
         for value in data.values():
-            found = _extract_first_video_id(value)
-            if found:
-                return found
+            yield from _iter_video_renderers(value)
     elif isinstance(data, list):
         for item in data:
-            found = _extract_first_video_id(item)
-            if found:
-                return found
-    return None
+            yield from _iter_video_renderers(item)
 
 
-def _extract_first_video_title(data: object) -> str | None:
-    if isinstance(data, dict):
-        renderer = data.get("videoRenderer")
-        if isinstance(renderer, dict):
-            title = renderer.get("title")
-            if isinstance(title, dict):
-                text = title.get("simpleText") or title.get("accessibility", {}).get(
-                    "accessibilityData", {}
-                ).get("label")
-                if isinstance(text, str) and text:
-                    return text
-        for value in data.values():
-            found = _extract_first_video_title(value)
-            if found:
-                return found
-    elif isinstance(data, list):
-        for item in data:
-            found = _extract_first_video_title(item)
-            if found:
-                return found
-    return None
-
-
-def _first_youtube_result(query: str) -> tuple[str, str]:
-    """Resolve the first YouTube search hit to a video id and title."""
-    search_url = (
-        f"https://www.youtube.com/results?search_query={quote_plus(query)}"
+def _renderer_title(renderer: dict) -> str:
+    title = renderer.get("title")
+    if not isinstance(title, dict):
+        return ""
+    text = title.get("simpleText")
+    if isinstance(text, str) and text.strip():
+        return text.strip()
+    runs = title.get("runs")
+    if isinstance(runs, list):
+        parts = [
+            part.get("text", "")
+            for part in runs
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ]
+        joined = "".join(parts).strip()
+        if joined:
+            return joined
+    label = (
+        title.get("accessibility", {})
+        .get("accessibilityData", {})
+        .get("label")
     )
+    return label.strip() if isinstance(label, str) else ""
+
+
+def _is_shorts(renderer: dict) -> bool:
+    blob = json.dumps(
+        {
+            "overlays": renderer.get("thumbnailOverlays"),
+            "nav": renderer.get("navigationEndpoint"),
+        },
+        default=str,
+    ).lower()
+    return "shorts" in blob or "reelwatch" in blob
+
+
+def _load_youtube_search(query: str) -> tuple[object | None, str]:
+    search_url = f"https://www.youtube.com/results?search_query={quote_plus(query)}"
     request = urllib.request.Request(
         search_url,
         headers={
@@ -173,24 +176,57 @@ def _first_youtube_result(query: str) -> tuple[str, str]:
     html = urllib.request.urlopen(request, timeout=20).read().decode(
         "utf-8", errors="ignore"
     )
-
-    video_id: str | None = None
-    title: str | None = None
     match = re.search(r"var ytInitialData\s*=\s*(\{.*?\});", html)
-    if match:
-        payload = json.loads(match.group(1))
-        video_id = _extract_first_video_id(payload)
-        title = _extract_first_video_title(payload)
+    payload = json.loads(match.group(1)) if match else None
+    return payload, html
 
-    if not video_id:
+
+def youtube_results(query: str, limit: int = 5) -> list[tuple[str, str]]:
+    """Top regular videos for a search, shorts removed, in page order."""
+    payload, html = _load_youtube_search(query)
+    found: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    if payload is not None:
+        for renderer in _iter_video_renderers(payload):
+            video_id = renderer.get("videoId")
+            if not isinstance(video_id, str) or video_id in seen or _is_shorts(renderer):
+                continue
+            title = _renderer_title(renderer)
+            if not title:
+                continue
+            seen.add(video_id)
+            found.append((video_id, title))
+            if len(found) >= limit:
+                break
+    if not found:
         fallback = re.search(r'"videoId"\s*:\s*"([a-zA-Z0-9_-]{11})"', html)
         if fallback:
-            video_id = fallback.group(1)
-
-    if not video_id:
+            found.append((fallback.group(1), query))
+    if not found:
         raise RuntimeError(f"No YouTube results for: {query}")
+    return found
 
-    return video_id, title or query
+
+def pick_youtube_result(query: str, needle: str | None = None) -> tuple[int, str, str]:
+    """Choose result 1, or result 2 when the first hit is a mix or compilation."""
+    hits = youtube_results(query, limit=6)
+    if needle:
+        matched = [hit for hit in hits if needle.casefold() in hit[1].casefold()]
+        if matched:
+            hits = matched
+    index = 0
+    if len(hits) > 1:
+        title = hits[0][1].casefold()
+        if any(token in title for token in (" mix", "compilation", "1 hour", "playlist")):
+            index = 1
+    video_id, title = hits[index]
+    return index + 1, video_id, title
+
+
+def _first_youtube_result(query: str) -> tuple[str, str]:
+    """Resolve the first regular YouTube search hit to a video id and title."""
+    _index, video_id, title = pick_youtube_result(query)
+    return video_id, title
 
 
 def _ui_dump() -> str:
@@ -227,8 +263,17 @@ def _find_skip_ad_target(xml: str) -> tuple[int, int] | None:
     return None
 
 
+def press_skip_ad() -> None:
+    """Activate Skip. YouTube TV focuses that button when it enables, and OK presses it.
+
+    The player draws Skip inside a custom view, so the accessibility dump has no label.
+    """
+    adb.ensure_connected()
+    adb.keyevent(OK)
+
+
 def skip_ad_if_shown() -> bool:
-    """Tap Skip Ad when it is on screen. One UI dump, no extra keypresses."""
+    """Tap a Skip label when the accessibility tree actually contains one."""
     target = _find_skip_ad_target(_ui_dump())
     if not target:
         return False
@@ -247,19 +292,20 @@ def _skip_youtube_ads(
     poll_interval: float = 2.0,
 ) -> None:
     """Poll for skippable ads and press Skip Ad when it becomes available."""
-    deadline = time.time() + max_seconds
+    started = time.time()
+    deadline = started + max_seconds
     while time.time() < deadline and not _ad_skip_stop.is_set():
+        age = time.time() - started
         playing = now_playing()
         expected = (expected_title or "").lower()[:24]
-        if expected and expected in playing.lower():
-            time.sleep(max(poll_interval, 3.0))
+        matched = bool(expected) and expected in playing.lower()
+        # Skip becomes pressable about five seconds into a preroll. OK is harmless
+        # during the movie on this set, and it fires the focused Skip control.
+        if not matched or age < 12:
+            press_skip_ad()
+            time.sleep(0.55)
             continue
-        if _ad_skip_stop.is_set():
-            return
-        if skip_ad_if_shown():
-            time.sleep(0.6)
-            continue
-        time.sleep(poll_interval)
+        time.sleep(max(poll_interval, 1.5))
 
 
 def _start_youtube_ad_skipper(
@@ -305,8 +351,8 @@ def youtube_search_play(query: str, wait: float = 5.0) -> str:
     """Search YouTube and play the first result, skipping ads when possible."""
     video_id, title = _first_youtube_result(query)
     open_youtube_video(video_id)
+    _start_youtube_ad_skipper(expected_title=title, max_seconds=18)
     time.sleep(wait)
-    _start_youtube_ad_skipper(expected_title=title)
     return query
 
 

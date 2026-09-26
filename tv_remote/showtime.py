@@ -9,8 +9,13 @@ from pathlib import Path
 from tv_remote import adb, keys
 
 SHOW_QUERY = "eminem not afraid official"
-START_AT = 8
-SEEK_TO = 40
+KIDS = (
+    ("Cocomelon", "cocomelon", "cocomelon"),
+    ("Shubh", "shubh we rollin", "shubh"),
+    ("Wheels on the Bus", "wheels on the bus cocomelon", "wheels"),
+    ("ABC song", "cocomelon abc song", "abc"),
+    ("Bath song", "cocomelon bath song", "bath"),
+)
 APPS = (
     ("youtube", "YouTube"),
     ("netflix", "Netflix"),
@@ -28,6 +33,8 @@ class _Run:
     expected_title = ""
     position_at_start = 0
     ads_skipped = 0
+    skip_presses = 0
+    clip_started = 0.0
 
 
 # Just long enough to see each change. The TV confirm is the real wait.
@@ -46,12 +53,20 @@ def _titles_agree(expected: str, actual: str) -> bool:
     return any(len(word) > 4 and word in actual_l for word in words)
 
 
+def _package_match(expected: str, seen: str) -> bool:
+    if not seen:
+        return False
+    if expected == "launcher":
+        return "launcher" in seen
+    return seen == expected or seen.startswith(expected + ".")
+
+
 def _wait_foreground(expected: str, timeout: float) -> str:
     deadline = time.time() + timeout
     seen = ""
     while time.time() < deadline:
         seen = keys.foreground_package()
-        if expected in seen or (seen and seen in expected):
+        if _package_match(expected, seen):
             return seen
         time.sleep(0.35)
     raise RuntimeError(f"expected {expected}, TV was showing {seen or 'nothing readable'}")
@@ -72,41 +87,57 @@ def _home() -> str:
     return f"launcher in front ({package})"
 
 
-def _volume_roundtrip() -> str:
+def _assert_playing() -> str:
+    info = keys.playback()
+    actual = str(info.get("title") or "")
+    if info.get("state") not in (3, 6) or not _titles_agree(_Run.expected_title, actual):
+        raise RuntimeError(
+            f"expected the video to be playing, TV reported "
+            f"state={info.get('state')} title={actual or 'nothing'}"
+        )
+    package = keys.foreground_package()
+    if "youtube" not in package:
+        raise RuntimeError(f"YouTube was not in front ({package or 'nothing'})")
+    return actual
+
+
+def _volume_while_playing() -> str:
+    """Raise and lower volume only after the YouTube video is already playing."""
+    title = _assert_playing()
     original = keys.music_volume()
     if original is None:
         raise RuntimeError("the TV did not report music volume")
     if original >= 97:
         for _ in range(3):
             keys.volume_down()
-            time.sleep(0.2)
+            time.sleep(0.15)
         dipped = keys.music_volume()
+        _assert_playing()
         for _ in range(3):
             keys.volume_up()
-            time.sleep(0.2)
+            time.sleep(0.15)
         restored = keys.music_volume()
-        if dipped is None or dipped >= original:
-            raise RuntimeError(f"volume stayed at {original}")
-        if restored != original:
-            raise RuntimeError(f"volume did not return to {original} (now {restored})")
-        return f"{original} -> {dipped} -> {restored}"
+        _assert_playing()
+        if dipped is None or dipped >= original or restored != original:
+            raise RuntimeError(f"volume while playing failed ({original} -> {dipped} -> {restored})")
+        return f"while \"{title}\" played, {original} -> {dipped} -> {restored}"
 
     for _ in range(3):
         keys.volume_up()
-        time.sleep(0.2)
+        time.sleep(0.15)
     raised = keys.music_volume()
+    _assert_playing()
     current = raised
     nudges = 0
     while current is not None and current > original and nudges < 8:
         keys.volume_down()
-        time.sleep(0.2)
+        time.sleep(0.15)
         current = keys.music_volume()
         nudges += 1
-    if raised is None or raised <= original:
-        raise RuntimeError(f"volume did not rise ({original} -> {raised})")
-    if current != original:
-        raise RuntimeError(f"volume did not return ({original} -> {raised} -> {current})")
-    return f"{original} -> {raised} -> {current}"
+    still = _assert_playing()
+    if raised is None or raised <= original or current != original:
+        raise RuntimeError(f"volume while playing failed ({original} -> {raised} -> {current})")
+    return f"while \"{still}\" played, {original} -> {raised} -> {current}"
 
 
 def _open_app(name: str) -> str:
@@ -133,82 +164,70 @@ def _back_from_last_app() -> str:
     raise RuntimeError(f"Back did not leave {previous}")
 
 
-def _await_track(timeout: float) -> dict[str, object]:
-    """Wait until the chosen video is playing, tapping Skip Ad when it appears."""
-    title = _Run.expected_title
-    deadline = time.time() + timeout
-    next_dump = time.time() + 4.5
-    info: dict[str, object] = {}
-    while time.time() < deadline:
-        info = keys.playback()
-        actual = str(info.get("title") or "")
-        if _titles_agree(title, actual) and info.get("state") in (3, 6):
-            return info
-        if time.time() >= next_dump:
-            if keys.skip_ad_if_shown():
-                _Run.ads_skipped += 1
-                next_dump = time.time() + 2.0
-            else:
-                next_dump = time.time() + 3.5
-        time.sleep(0.35)
-    actual = str(info.get("title") or "nothing")
-    raise RuntimeError(f"wanted \"{title}\", TV reported \"{actual}\"")
-
-
-def _ad_note(before: int) -> str:
-    skipped = _Run.ads_skipped - before
-    if skipped <= 0:
-        return ""
-    word = "ad" if skipped == 1 else "ads"
-    return f", skipped {skipped} {word}"
-
-
 def _play_track() -> str:
-    video_id, title = keys._first_youtube_result(SHOW_QUERY)
+    """Open the Eminem track, press OK while Skip can be focused, then leave it up briefly."""
+    return _watch(SHOW_QUERY, "eminem")
+
+
+def _watch(query: str, needle: str | None = None) -> str:
+    index, video_id, title = keys.pick_youtube_result(query, needle)
     _Run.video_id = video_id
     _Run.expected_title = title
-    before = _Run.ads_skipped
-    keys.open_youtube_video(video_id, START_AT)
-    info = _await_track(40)
-    position = info.get("position_ms")
-    _Run.position_at_start = int(position) if isinstance(position, int) else 0
-    actual = str(info.get("title") or title)
-    return f"playing \"{actual}\" from about {START_AT}s{_ad_note(before)}"
-
-
-def _seek_ahead() -> str:
-    if not _Run.video_id:
-        raise RuntimeError("no video was started")
-    before = _Run.ads_skipped
-    keys.open_youtube_video(_Run.video_id, SEEK_TO)
-    deadline = time.time() + 16
-    next_dump = time.time() + 4.5
+    keys.open_youtube_video(video_id)
+    opened = time.time()
+    matched_at: float | None = None
+    saw_other = False
+    presses = 0
     info: dict[str, object] = {}
-    while time.time() < deadline:
+    while time.time() - opened < 22:
+        age = time.time() - opened
+        # Skip usually enables at 5s. Keep sending OK through 9s even if the
+        # media title already shows the song, because YouTube often reports
+        # that title while the ad is still on screen.
+        if age >= 4:
+            keys.press_skip_ad()
+            presses += 1
         info = keys.playback()
         actual = str(info.get("title") or "")
-        position = info.get("position_ms")
-        title_ok = _titles_agree(_Run.expected_title, actual)
-        if title_ok and isinstance(position, int):
-            near_target = 30_000 <= position <= 90_000
-            moved = (
-                _Run.position_at_start >= 50_000
-                and position + 15_000 < _Run.position_at_start
-            )
-            if near_target or moved:
-                return (
-                    f"playback is at {position // 1000}s "
-                    f"(jumped to {SEEK_TO}s){_ad_note(before)}"
-                )
-        elif time.time() >= next_dump:
-            if keys.skip_ad_if_shown():
-                _Run.ads_skipped += 1
-                next_dump = time.time() + 2.0
-            else:
-                next_dump = time.time() + 3.5
-        time.sleep(0.35)
-    position = info.get("position_ms")
-    raise RuntimeError(f"seek to {SEEK_TO}s did not land (position={position})")
+        matched = _titles_agree(title, actual) and info.get("state") in (3, 6)
+        if actual and actual.lower() not in {"null", "none"} and not _titles_agree(title, actual):
+            saw_other = True
+        if _titles_agree(title, actual) and info.get("state") == 2:
+            keys.media_play()
+            info = keys.playback()
+            actual = str(info.get("title") or "")
+            matched = _titles_agree(title, actual) and info.get("state") in (3, 6)
+        if age >= 4 and (age < 9 or not matched):
+            keys.press_skip_ad()
+            presses += 1
+        if matched:
+            if matched_at is None:
+                matched_at = time.time()
+            if age >= 7.5 and time.time() - matched_at >= 1.0:
+                break
+        else:
+            matched_at = None
+        time.sleep(0.3)
+    else:
+        actual = str(info.get("title") or "nothing")
+        raise RuntimeError(f"wanted \"{title}\", TV reported \"{actual}\"")
+    _Run.skip_presses += presses
+    if saw_other:
+        _Run.ads_skipped += 1
+    actual = str(info.get("title") or title)
+    ad_bit = ", ad title cleared after OK" if saw_other else ", OK armed for Skip"
+    return f"result {index} \"{actual}\" for a few seconds ({presses} OK presses{ad_bit})"
+
+
+def _kid_clip(query: str, needle: str, with_volume: bool = False) -> str:
+    """Search, open result 1 or 2, play briefly, then pause and leave it."""
+    detail = _watch(query, needle)
+    volume = _volume_while_playing() if with_volume else ""
+    paused = _pause()
+    stopped = _stop_and_home()
+    if volume:
+        return f"{detail}; {volume}; {paused}; {stopped}"
+    return f"{detail}; {paused}; {stopped}"
 
 
 def _pause() -> str:
@@ -216,9 +235,20 @@ def _pause() -> str:
     return _wait_state(2, "paused")
 
 
-def _resume() -> str:
-    keys.media_play()
-    return _wait_state(3, "playing")
+def _stop_and_home() -> str:
+    """Leave the clip so it does not keep playing."""
+    keys.media_pause()
+    keys.home()
+    package = _wait_foreground("launcher", 8)
+    info = keys.playback()
+    if info.get("state") == 3:
+        keys.media_pause()
+        time.sleep(0.4)
+        info = keys.playback()
+    if info.get("state") == 3:
+        raise RuntimeError("video was still playing after Home")
+    state = STATE_NAMES.get(info.get("state"), "stopped")
+    return f"launcher {package}, playback {state}"
 
 
 def _wait_state(wanted: int, label: str) -> str:
@@ -246,13 +276,11 @@ def _screenshot() -> str:
 
 def _now_playing() -> str:
     info = keys.playback()
-    title = str(info.get("title") or "")
-    if not _titles_agree(_Run.expected_title, title):
-        raise RuntimeError(f"expected the showtime track, TV said \"{title or 'nothing'}\"")
-    state = STATE_NAMES.get(info.get("state"), str(info.get("state")))
-    position = info.get("position_ms")
-    seconds = f"{int(position) // 1000}s" if isinstance(position, int) else "an unknown time"
-    return f"{state} at {seconds}: {title}"
+    if info.get("state") == 3:
+        raise RuntimeError("the clip is still playing")
+    title = str(info.get("title") or "nothing")
+    state = STATE_NAMES.get(info.get("state"), "stopped")
+    return f"{state}: {title}"
 
 
 def run() -> int:
@@ -261,17 +289,33 @@ def run() -> int:
     _Run.video_id = ""
     _Run.expected_title = ""
     _Run.position_at_start = 0
+    _Run.ads_skipped = 0
+    _Run.skip_presses = 0
+    _Run.clip_started = 0.0
 
     steps: list[tuple[str, str, object]] = [
         ("Connect", "Join the TV over ADB and read its model.", _connect),
         ("Home", "Open the launcher and confirm it is the screen in front.", _home),
-        (
-            "Volume",
-            "Raise music volume, confirm the TV reports the change, then put it back.",
-            _volume_roundtrip,
-        ),
     ]
+    label, query, needle = KIDS[0]
+    steps.append(
+        (
+            label,
+            f"Search YouTube for \"{query}\" first and open the video directly. While it is playing, raise the volume, lower it back, then stop. The account picker is not opened.",
+            lambda query=query, needle=needle: _kid_clip(query, needle, with_volume=True),
+        )
+    )
+    for label, query, needle in KIDS[1:]:
+        steps.append(
+            (
+                label,
+                f"Search YouTube for \"{query}\", open result 1 or 2, play it for a few seconds, then stop.",
+                lambda query=query, needle=needle: _kid_clip(query, needle),
+            )
+        )
     for name, label in APPS:
+        if name == "youtube":
+            continue
         steps.append(
             (
                 label,
@@ -287,31 +331,31 @@ def run() -> int:
                 _back_from_last_app,
             ),
             (
-                "YouTube track",
-                f"Search \"{SHOW_QUERY}\", play the first result near {START_AT}s, skip an ad if one is on screen, and confirm the title.",
+                "YouTube clip",
+                f"Play the first result for \"{SHOW_QUERY}\" for a few seconds. OK presses Skip as soon as YouTube focuses that button.",
                 _play_track,
             ),
+            ("Pause", "Pause that clip and confirm the TV reports paused.", _pause),
             (
-                "Jump ahead",
-                f"Re-open that same video at {SEEK_TO}s and confirm playback moved there.",
-                _seek_ahead,
+                "Stop",
+                "Go Home and confirm the clip is not still playing.",
+                _stop_and_home,
             ),
-            ("Pause", "Pause the track and confirm the TV reports paused.", _pause),
-            ("Resume", "Start it again and confirm the TV reports playing.", _resume),
             (
                 "Screenshot",
-                "Capture the TV screen and confirm a real PNG was saved here.",
+                "Capture the TV after the clip has stopped and confirm a real PNG was saved.",
                 _screenshot,
             ),
             (
                 "Now playing",
-                "Read the active media session and confirm it is still this track.",
+                "Read the media session and confirm the clip was not left running.",
                 _now_playing,
             ),
         ]
     )
 
     _Run.ads_skipped = 0
+    _Run.skip_presses = 0
     started = time.time()
     print("\n=== Showtime ===", flush=True)
     print("Each step runs on the TV, then the TV's own state is checked.\n", flush=True)
@@ -330,14 +374,16 @@ def run() -> int:
 
     passed = total - failures
     elapsed = time.time() - started
-    ads = _Run.ads_skipped
-    ad_line = (
-        f"Skipped {ads} ad{'s' if ads != 1 else ''}."
-        if ads
-        else "No ad button appeared on this run."
-    )
+    presses = _Run.skip_presses
+    if _Run.ads_skipped:
+        ad_line = f"An ad title cleared after {presses} OK presses."
+    else:
+        ad_line = (
+            f"{presses} OK presses while Skip can be focused. "
+            "No separate ad title showed on this run."
+        )
     print(f"=== Showtime: {passed} ok, {failures} failed, {elapsed:.0f}s ===", flush=True)
     print(ad_line, flush=True)
     if failures == 0:
-        print("The TV should be playing the YouTube track from this run.\n", flush=True)
+        print("The clip was stopped and the TV is back on the launcher.\n", flush=True)
     return 1 if failures else 0
