@@ -86,7 +86,7 @@ def mute() -> None:
     _press(MUTE)
 
 
-def launch_app(name: str) -> None:
+def launch_app(name: str, settle: float = 1.5) -> None:
     """Open a streaming app by short name (youtube, netflix, prime, etc.)."""
     key = name.lower()
     pkg = APPS.get(key)
@@ -101,7 +101,8 @@ def launch_app(name: str) -> None:
             f"monkey -p {pkg} -c android.intent.category.LEANBACK_LAUNCHER 1",
             check=False,
         )
-    time.sleep(1.5)
+    if settle > 0:
+        time.sleep(settle)
 
 
 def screenshot(path: str = "tv_screenshot.png") -> str:
@@ -197,16 +198,26 @@ def _ui_dump() -> str:
     return adb.shell("cat /sdcard/ui.xml", check=False)
 
 
+def _skip_ad_label(node: str) -> bool:
+    """True when this UI node is a YouTube Skip control, not a countdown."""
+    if re.search(r"skip_ad", node, re.IGNORECASE):
+        return True
+    labels = re.findall(r'(?:text|content-desc)="([^"]*)"', node, re.IGNORECASE)
+    for label in labels:
+        norm = re.sub(r"\s+", " ", label).strip().lower()
+        if norm in {"skip", "skip ad", "skip ads", "skip advertisement"}:
+            return True
+        if norm.startswith("skip ad"):
+            return True
+    return False
+
+
 def _find_skip_ad_target(xml: str) -> tuple[int, int] | None:
     """Return tap coordinates for an enabled Skip Ad control, if visible."""
-    for node in re.findall(r"<node[^>]+/?>", xml):
-        if not re.search(r"skip\s*ad", node, re.IGNORECASE):
+    for node in re.findall(r"<node\b[^>]*>", xml):
+        if 'enabled="false"' in node or not _skip_ad_label(node):
             continue
-        if 'enabled="false"' in node or 'clickable="false"' in node:
-            continue
-        bounds = re.search(
-            r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', node
-        )
+        bounds = re.search(r'bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"', node)
         if not bounds:
             continue
         x1, y1, x2, y2 = (int(v) for v in bounds.groups())
@@ -216,21 +227,18 @@ def _find_skip_ad_target(xml: str) -> tuple[int, int] | None:
     return None
 
 
-def _try_skip_ad() -> bool:
-    """Skip a YouTube ad when the on-screen button is enabled."""
+def skip_ad_if_shown() -> bool:
+    """Tap Skip Ad when it is on screen. One UI dump, no extra keypresses."""
     target = _find_skip_ad_target(_ui_dump())
-    if target:
-        adb.tap(*target)
-        return True
+    if not target:
+        return False
+    adb.tap(*target)
+    return True
 
-    adb.keyevent(RIGHT)
-    time.sleep(0.25)
-    target = _find_skip_ad_target(_ui_dump())
-    if target:
-        adb.tap(*target)
-        return True
 
-    return False
+_last_youtube_id: str | None = None
+_ad_skip_stop = threading.Event()
+_ad_skip_thread: threading.Thread | None = None
 
 
 def _skip_youtube_ads(
@@ -240,27 +248,17 @@ def _skip_youtube_ads(
 ) -> None:
     """Poll for skippable ads and press Skip Ad when it becomes available."""
     deadline = time.time() + max_seconds
-    while time.time() < deadline:
-        if _find_skip_ad_target(_ui_dump()):
-            _try_skip_ad()
-            time.sleep(1.0)
-            continue
-
+    while time.time() < deadline and not _ad_skip_stop.is_set():
         playing = now_playing()
-        if playing != "Nothing playing right now":
-            lower = playing.lower()
-            ad_hint = any(
-                token in lower
-                for token in (" sponsored", " advertisement", " visit site")
-            )
-            title_mismatch = (
-                expected_title
-                and expected_title.lower()[:24] not in lower
-                and time.time() < deadline - max_seconds + 30
-            )
-            if ad_hint or title_mismatch:
-                _try_skip_ad()
-
+        expected = (expected_title or "").lower()[:24]
+        if expected and expected in playing.lower():
+            time.sleep(max(poll_interval, 3.0))
+            continue
+        if _ad_skip_stop.is_set():
+            return
+        if skip_ad_if_shown():
+            time.sleep(0.6)
+            continue
         time.sleep(poll_interval)
 
 
@@ -269,24 +267,44 @@ def _start_youtube_ad_skipper(
     max_seconds: float = 90.0,
 ) -> None:
     """Watch for skippable ads in the background after playback starts."""
-    thread = threading.Thread(
+    global _ad_skip_thread
+    stop_ad_skip(join_timeout=0.2)
+    _ad_skip_stop.clear()
+    _ad_skip_thread = threading.Thread(
         target=_skip_youtube_ads,
         kwargs={"expected_title": expected_title, "max_seconds": max_seconds},
         daemon=True,
     )
-    thread.start()
+    _ad_skip_thread.start()
+
+
+def stop_ad_skip(join_timeout: float = 12.0) -> None:
+    """Stop the background ad skipper so later key events are ours."""
+    _ad_skip_stop.set()
+    thread = _ad_skip_thread
+    if thread and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(join_timeout)
+
+
+def open_youtube_video(video_id: str, start_seconds: int | None = None) -> None:
+    """Open a YouTube video. A start time uses the youtu.be form this TV honors."""
+    global _last_youtube_id
+    adb.ensure_connected()
+    _last_youtube_id = video_id
+    if start_seconds is not None and int(start_seconds) > 0:
+        url = f"https://youtu.be/{video_id}?t={int(start_seconds)}"
+    else:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+    adb.shell(
+        f'am start -a android.intent.action.VIEW -d "{url}" {APPS["youtube"]}',
+        check=False,
+    )
 
 
 def youtube_search_play(query: str, wait: float = 5.0) -> str:
     """Search YouTube and play the first result, skipping ads when possible."""
-    adb.ensure_connected()
     video_id, title = _first_youtube_result(query)
-    watch_url = f"https://www.youtube.com/watch?v={video_id}"
-    pkg = APPS["youtube"]
-    adb.shell(
-        f'am start -a android.intent.action.VIEW -d "{watch_url}" {pkg}',
-        check=False,
-    )
+    open_youtube_video(video_id)
     time.sleep(wait)
     _start_youtube_ad_skipper(expected_title=title)
     return query
@@ -300,16 +318,79 @@ def play_enrique_hit() -> str:
     return youtube_search_play("enrique iglesias hero official")
 
 
-def skip_forward() -> None:
-    _press(SKIP_FORWARD)
+def skip_forward(seconds: int = 30) -> None:
+    """Jump ahead in the YouTube video we opened, or send the media skip key."""
+    adb.ensure_connected()
+    if not _last_youtube_id or "youtube" not in foreground_package():
+        _press(SKIP_FORWARD)
+        return
+    media_pause()
+    time.sleep(0.8)
+    info = playback()
+    position_ms = info.get("position_ms")
+    base = int(position_ms) // 1000 if isinstance(position_ms, int) and position_ms > 0 else 0
+    open_youtube_video(_last_youtube_id, base + seconds)
 
 
 def show_recent_apps() -> None:
     _press(APP_SWITCH)
 
 
-def now_playing() -> str:
-    """Return title of the active playback session, if any."""
+def music_volume() -> int | None:
+    """Current media volume as reported by the TV audio service."""
+    adb.ensure_connected()
+    out = adb.shell("media volume --stream 3 --get", check=False)
+    match = re.search(r"volume is (\d+)", out)
+    if match:
+        return int(match.group(1))
+    speaker = adb.shell("settings get system volume_music_speaker", check=False).strip()
+    if speaker.isdigit():
+        return int(speaker)
+    return None
+
+
+def foreground_package() -> str:
+    """Package name of the window currently in front on the TV."""
+    adb.ensure_connected()
+    focused = adb.shell("dumpsys window | grep mCurrentFocus", check=False)
+    if "not found" in focused.lower():
+        focused = adb.shell("dumpsys window", check=False)
+    for line in focused.splitlines():
+        if "mCurrentFocus" not in line:
+            continue
+        match = re.search(r"\s([\w.]+)/", line)
+        if match:
+            return match.group(1)
+    out = adb.shell("dumpsys activity activities", check=False)
+    for line in out.splitlines():
+        if "mResumedActivity" not in line:
+            continue
+        match = re.search(r"u0\s+([\w.]+)/", line)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def media_pause() -> None:
+    adb.ensure_connected()
+    adb.keyevent(127)
+
+
+def media_play() -> None:
+    adb.ensure_connected()
+    adb.keyevent(126)
+
+
+def _session_title(session: dict[str, object]) -> str | None:
+    desc = session.get("description")
+    if not isinstance(desc, str):
+        return None
+    title = desc.split(",")[0].strip()
+    return title or None
+
+
+def playback() -> dict[str, object]:
+    """Best media session: package, state, position_ms, speed, title."""
     adb.ensure_connected()
     out = adb.shell("dumpsys media_session", check=False)
     sessions: list[dict[str, object]] = []
@@ -322,9 +403,14 @@ def now_playing() -> str:
             current = {"package": stripped.split("=", 1)[1]}
             continue
         if "state=PlaybackState" in stripped:
-            match = re.search(r"state=(\d+)", stripped)
+            match = re.search(
+                r"state=(\d+), position=(-?\d+).*?speed=([0-9.]+)",
+                stripped,
+            )
             if match:
                 current["state"] = int(match.group(1))
+                current["position_ms"] = int(match.group(2))
+                current["speed"] = float(match.group(3))
             continue
         if stripped.startswith("metadata:") and "description=" in stripped:
             desc = stripped.split("description=", 1)[1].strip()
@@ -333,22 +419,26 @@ def now_playing() -> str:
     if current:
         sessions.append(current)
 
-    def _title(session: dict[str, object]) -> str | None:
-        desc = session.get("description")
-        if not isinstance(desc, str):
-            return None
-        title = desc.split(",")[0].strip()
-        return title or None
+    def rank(session: dict[str, object]) -> tuple[int, int, int]:
+        playing = 1 if session.get("state") == 3 else 0
+        titled = 1 if _session_title(session) else 0
+        youtube = 1 if "youtube" in str(session.get("package", "")) else 0
+        return (playing, titled, youtube)
 
-    active = [
-        s for s in sessions if s.get("state") == 3 and _title(s)
-    ]
-    if not active:
-        active = [s for s in sessions if _title(s)]
+    best = max(sessions, key=rank) if sessions else {}
+    return {
+        "package": best.get("package"),
+        "state": best.get("state"),
+        "position_ms": best.get("position_ms"),
+        "speed": best.get("speed"),
+        "title": _session_title(best) if best else None,
+    }
 
-    if active:
-        title = _title(active[0])
-        if title:
-            return title
+
+def now_playing() -> str:
+    """Return title of the active playback session, if any."""
+    title = playback().get("title")
+    if isinstance(title, str) and title:
+        return title
     return "Nothing playing right now"
 

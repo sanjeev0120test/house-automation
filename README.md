@@ -6,7 +6,8 @@ Control an Android TV from your computer over WiFi using Python and ADB. Tested 
 cp config/tv.json.example config/tv.json   # once: set YOUR_TV_IP
 ./scripts/check_connection.ps1             # verify network + ADB
 python -m tv_remote.cli                    # run the numbered remote
-python scripts/validate_remote.py          # optional: test all 18 options
+python -m tv_remote.cli showtime           # one checked pass across the TV
+python scripts/validate_remote.py          # optional: test menu options 1–18
 ```
 
 **Requirements:** Python 3.10+, [Android platform-tools](https://developer.android.com/tools/releases/platform-tools) at `tools/platform-tools/adb`, TV and computer on the same WiFi, `config/tv.json` with your TV IP (gitignored).
@@ -18,6 +19,7 @@ python scripts/validate_remote.py          # optional: test all 18 options
 - [Overview](#overview)
 - [One-time setup](#one-time-setup)
 - [Remote menu](#remote-menu)
+- [Showtime](#showtime)
 - [Architecture](#architecture)
 - [YouTube search and ad skip](#youtube-search-and-ad-skip)
 - [Validation](#validation)
@@ -96,7 +98,7 @@ Expected: ping succeeds, TCP port open, `adb devices` shows `YOUR_TV_IP:5555    
 python -m tv_remote.cli
 ```
 
-Type **1–18** to act, **q** to quit.
+Type **1–19** to act, **q** to quit. Option **19** is the same sequence as `python -m tv_remote.cli showtime`.
 
 ---
 
@@ -120,11 +122,26 @@ Type **1–18** to act, **q** to quit.
 | 14 | Eminem on YouTube | YouTube search preset → first result |
 | 15 | Enrique on YouTube | YouTube search preset → first result |
 | 16 | YouTube search | Prompt for query → first result |
-| 17 | Skip forward ~30 s | `input keyevent 272` (`KEYCODE_MEDIA_SKIP_FORWARD`) |
+| 17 | Skip forward ~30 s | Reopen the video 30 s ahead (`youtu.be?t=`). Key 272 only if this process did not open it |
 | 18 | Now playing | Parse `dumpsys media_session` for active playback |
+| 19 | Showtime | Run connect, home, volume, every app, then a checked YouTube play |
 | q | Quit | Exit CLI |
 
 Options **14–16** print `Playing first result for: …` instead of `OK: …`.
+
+---
+
+## Showtime
+
+```bash
+python -m tv_remote.cli showtime
+```
+
+Each step prints what it is about to do, runs it, then checks the TV before the next one. The pause between steps is under half a second. A full pass is about a minute when YouTube does not insert an ad, and stays around three minutes when one has to finish.
+
+The order is connect, home, volume up then restore, YouTube, Netflix, Prime Video, Hotstar, SonyLIV, JioCinema, back, play the first result for `eminem not afraid official`, jump that video to 40 s, pause, resume, screenshot, and now playing. OK / Select is left out: on the launcher it would open whichever tile is focused, so it cannot be checked reliably.
+
+If a control labeled Skip or Skip Ad is on screen, that step taps it and waits until the real title is playing. A countdown such as "Skip in 5" is left alone. An unskippable ad has to finish.
 
 ---
 
@@ -150,6 +167,7 @@ Options **14–16** print `Playing first result for: …` instead of `OK: …`.
 | `tv_remote/adb.py` | Load `config/tv.json`, run `adb`, connect, keyevent, shell, tap, pull |
 | `tv_remote/keys.py` | Remote actions, app launch, YouTube resolve/play, ad-skip thread, now playing |
 | `tv_remote/cli.py` | Numbered menu loop and error handling |
+| `tv_remote/showtime.py` | One checked pass: home, volume, apps, YouTube |
 | `scripts/check_connection.ps1` | Ping, TCP port, `adb connect`, `adb devices` |
 | `scripts/validate_remote.py` | Automated pass/fail test for all menu options |
 
@@ -169,16 +187,15 @@ Options **14–16** print `Playing first result for: …` instead of `OK: …`.
 
 This plays the same top result YouTube shows in a browser search, without DPAD navigation.
 
-### Ad skip (background thread)
+### Ad skip
 
-After playback starts, a daemon thread runs for **90 seconds** and every **2 seconds**:
+Options **14–16** start a background watcher for **90 seconds**. It reads the media title first. While that title matches the video we opened, it does not dump the screen. When the title does not match, it dumps the UI once and taps an enabled control labeled Skip, Skip Ad, or Skip Ads.
 
-1. Runs `uiautomator dump` and looks for an enabled node matching `skip ad` (case-insensitive)
-2. If found, taps the button centre via `input tap X Y`
-3. If not found, sends **RIGHT** once and re-checks
-4. Falls back to title heuristics in the first 30 s (sponsored keywords or title mismatch vs expected)
+Showtime uses the same tap inline, and only dumps the screen if the expected title is still missing after a few seconds.
 
-**Limitation (observed on test device):** YouTube TV renders most UI in custom views. `uiautomator dump` often returns minimal nodes during playback, so ad skip works when the Skip Ad button is exposed in the accessibility tree. It does not skip unskippable ads.
+On this TV, `KEYCODE_MEDIA_SKIP_FORWARD` (272) does not move YouTube playback. A start time on `https://youtu.be/VIDEO_ID?t=SECONDS` does. Option **17** uses that when this process opened the video: pause, read the position, reopen 30 seconds ahead.
+
+**Limitation:** YouTube TV often draws its UI in custom views, so the Skip button is not always in the accessibility tree. Unskippable ads cannot be dismissed early.
 
 ---
 
@@ -190,7 +207,15 @@ Run the full suite (takes ~3 minutes; switches apps and plays YouTube):
 python scripts/validate_remote.py
 ```
 
-Last verified run: **17 pass, 0 warn, 0 fail** — all menu options including six app launches, volume, YouTube search, presets, skip forward, and now playing.
+Last verified menu run: **17 pass, 0 warn, 0 fail**.
+
+Showtime, checked on the TV after the timing pass:
+
+```bash
+python -m tv_remote.cli showtime
+```
+
+**16 ok, 0 failed, 67s.** Volume read 37 → 40 → 37, each streaming app was the focused window, and YouTube reported "Eminem - Not Afraid" at 41s after the jump to 40s, then paused and playing again. No Skip button appeared on that pass.
 
 The script checks foreground app via `dumpsys activity activities` (`mResumedActivity`), volume via `dumpsys audio`, and playback via `now_playing()`.
 
@@ -353,7 +378,8 @@ house-automation/
 ├── tv_remote/
 │   ├── adb.py               # ADB wrapper (connect, shell, keyevent, tap)
 │   ├── keys.py              # remote actions, YouTube logic, ad skip
-│   └── cli.py               # numbered menu (options 1–18)
+│   ├── showtime.py          # one checked pass across the TV
+│   └── cli.py               # numbered menu (options 1–19)
 ├── scripts/
 │   ├── check_connection.ps1 # network + ADB smoke test
 │   └── validate_remote.py   # automated test for all 18 options

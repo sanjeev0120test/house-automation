@@ -1,6 +1,8 @@
-"""Simple numbered menu — type 1-18 to control Mi TV."""
+"""Simple numbered menu — type 1-19 to control Mi TV."""
 
-from tv_remote import adb, keys
+import sys
+
+from tv_remote import adb, keys, showtime
 
 MENU = """
 === Mi TV Remote ===
@@ -14,7 +16,10 @@ MENU = """
 14  Eminem on YouTube   15  Enrique on YouTube
 16  YouTube search (type anything)
 17  Skip forward 30s    18  Now playing
+19  Showtime — home, volume, every app, then a checked YouTube play
  q  Quit
+
+One-shot: python -m tv_remote.cli showtime
 """
 
 
@@ -53,9 +58,10 @@ ACTIONS = {
     "16": ("YouTube search", _youtube_custom_search),
     "17": ("Skip forward", keys.skip_forward),
     "18": ("Now playing", _now_playing),
+    "19": ("Showtime", showtime.run),
 }
 
-QUIET_OK = {"13", "14", "15", "16", "18"}
+QUIET_OK = {"13", "14", "15", "16", "18", "19"}
 
 
 def _connect() -> None:
@@ -68,6 +74,9 @@ def _connect() -> None:
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1].lower() in {"showtime", "demo", "all"}:
+        raise SystemExit(showtime.run())
+
     print(MENU)
     _connect()
 
