@@ -227,8 +227,17 @@ def _find_skip_ad_target(xml: str) -> tuple[int, int] | None:
     return None
 
 
+def press_skip_ad() -> None:
+    """Activate Skip. YouTube TV focuses that button when it enables, and OK presses it.
+
+    The player draws Skip inside a custom view, so the accessibility dump has no label.
+    """
+    adb.ensure_connected()
+    adb.keyevent(OK)
+
+
 def skip_ad_if_shown() -> bool:
-    """Tap Skip Ad when it is on screen. One UI dump, no extra keypresses."""
+    """Tap a Skip label when the accessibility tree actually contains one."""
     target = _find_skip_ad_target(_ui_dump())
     if not target:
         return False
@@ -247,19 +256,20 @@ def _skip_youtube_ads(
     poll_interval: float = 2.0,
 ) -> None:
     """Poll for skippable ads and press Skip Ad when it becomes available."""
-    deadline = time.time() + max_seconds
+    started = time.time()
+    deadline = started + max_seconds
     while time.time() < deadline and not _ad_skip_stop.is_set():
+        age = time.time() - started
         playing = now_playing()
         expected = (expected_title or "").lower()[:24]
-        if expected and expected in playing.lower():
-            time.sleep(max(poll_interval, 3.0))
+        matched = bool(expected) and expected in playing.lower()
+        # Skip becomes pressable about five seconds into a preroll. OK is harmless
+        # during the movie on this set, and it fires the focused Skip control.
+        if not matched or age < 12:
+            press_skip_ad()
+            time.sleep(0.55)
             continue
-        if _ad_skip_stop.is_set():
-            return
-        if skip_ad_if_shown():
-            time.sleep(0.6)
-            continue
-        time.sleep(poll_interval)
+        time.sleep(max(poll_interval, 1.5))
 
 
 def _start_youtube_ad_skipper(
@@ -305,8 +315,8 @@ def youtube_search_play(query: str, wait: float = 5.0) -> str:
     """Search YouTube and play the first result, skipping ads when possible."""
     video_id, title = _first_youtube_result(query)
     open_youtube_video(video_id)
+    _start_youtube_ad_skipper(expected_title=title, max_seconds=18)
     time.sleep(wait)
-    _start_youtube_ad_skipper(expected_title=title)
     return query
 
 

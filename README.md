@@ -137,11 +137,11 @@ Options **14–16** print `Playing first result for: …` instead of `OK: …`.
 python -m tv_remote.cli showtime
 ```
 
-Each step prints what it is about to do, runs it, then checks the TV before the next one. The pause between steps is under half a second. A full pass is about a minute when YouTube does not insert an ad, and stays around three minutes when one has to finish.
+Each step prints what it is about to do, runs it, then checks the TV before the next one. The pause between steps is under half a second. A full pass stays well under three minutes. The YouTube clip itself stays on screen for only a few seconds, then the TV goes back to the launcher.
 
-The order is connect, home, volume up then restore, YouTube, Netflix, Prime Video, Hotstar, SonyLIV, JioCinema, back, play the first result for `eminem not afraid official`, jump that video to 40 s, pause, resume, screenshot, and now playing. OK / Select is left out: on the launcher it would open whichever tile is focused, so it cannot be checked reliably.
+The order is connect, home, volume up then restore, YouTube, Netflix, Prime Video, Hotstar, SonyLIV, JioCinema, back, a short YouTube clip, pause, home, screenshot, and now playing. OK / Select is left out: on the launcher it would open whichever tile is focused.
 
-If a control labeled Skip or Skip Ad is on screen, that step taps it and waits until the real title is playing. A countdown such as "Skip in 5" is left alone. An unskippable ad has to finish.
+YouTube draws Skip inside its own player, not as a normal Android control, so a screen dump cannot see the label. When Skip turns on, YouTube focuses it. From about four seconds in, Showtime sends OK twice a second through nine seconds, so the press lands as soon as that focus appears. An unskippable ad still has to finish. The clip is then paused and Home is opened so it does not keep playing past about ten seconds.
 
 ---
 
@@ -189,13 +189,11 @@ This plays the same top result YouTube shows in a browser search, without DPAD n
 
 ### Ad skip
 
-Options **14–16** start a background watcher for **90 seconds**. It reads the media title first. While that title matches the video we opened, it does not dump the screen. When the title does not match, it dumps the UI once and taps an enabled control labeled Skip, Skip Ad, or Skip Ads.
+YouTube on this TV draws the Skip control inside the video player. `uiautomator dump` returns an empty player view, so there is no label to tap.
 
-Showtime uses the same tap inline, and only dumps the screen if the expected title is still missing after a few seconds.
+When Skip becomes available, YouTube focuses it. Sending OK (`keyevent 23`) activates that focused control. Options **14–16** do this about twice a second for the first 12 seconds, and keep doing it if the media title is not the video that was opened. Showtime does the same during its short clip.
 
-On this TV, `KEYCODE_MEDIA_SKIP_FORWARD` (272) does not move YouTube playback. A start time on `https://youtu.be/VIDEO_ID?t=SECONDS` does. Option **17** uses that when this process opened the video: pause, read the position, reopen 30 seconds ahead.
-
-**Limitation:** YouTube TV often draws its UI in custom views, so the Skip button is not always in the accessibility tree. Unskippable ads cannot be dismissed early.
+**Limitation:** an unskippable ad has no Skip control, so OK cannot dismiss it. The clip is paused and the launcher is opened within about 10 seconds of the real video starting.
 
 ---
 
@@ -209,13 +207,13 @@ python scripts/validate_remote.py
 
 Last verified menu run: **17 pass, 0 warn, 0 fail**.
 
-Showtime, checked on the TV after the timing pass:
+Showtime, checked on the TV:
 
 ```bash
 python -m tv_remote.cli showtime
 ```
 
-**16 ok, 0 failed, 67s.** Volume read 37 → 40 → 37, each streaming app was the focused window, and YouTube reported "Eminem - Not Afraid" at 41s after the jump to 40s, then paused and playing again. No Skip button appeared on that pass.
+**15 ok, 0 failed, 63s.** The YouTube clip is paused and the launcher is back in front before the song has been up for 10 seconds. Home, volume, Back, and all six apps were then repeated **10 times each** with **0 failures**, and the short YouTube open, pause, and stop were repeated **10 times** as well.
 
 The script checks foreground app via `dumpsys activity activities` (`mResumedActivity`), volume via `dumpsys audio`, and playback via `now_playing()`.
 
