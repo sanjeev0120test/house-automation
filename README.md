@@ -124,7 +124,7 @@ Type **1–19** to act, **q** to quit. Option **19** is the same sequence as `py
 | 16 | YouTube search | Prompt for query → first result |
 | 17 | Skip forward ~30 s | Reopen the video 30 s ahead (`youtu.be?t=`). Key 272 only if this process did not open it |
 | 18 | Now playing | Parse `dumpsys media_session` for active playback |
-| 19 | Showtime | Run connect, home, volume, every app, then a checked YouTube play |
+| 19 | Showtime | Kids searches first (Cocomelon, Shubh, and three more), then every app, then a short clip |
 | q | Quit | Exit CLI |
 
 Options **14–16** print `Playing first result for: …` instead of `OK: …`.
@@ -137,11 +137,11 @@ Options **14–16** print `Playing first result for: …` instead of `OK: …`.
 python -m tv_remote.cli showtime
 ```
 
-Each step prints what it is about to do, runs it, then checks the TV before the next one. The pause between steps is under half a second. A full pass stays well under three minutes. The YouTube clip itself stays on screen for only a few seconds, then the TV goes back to the launcher.
+Each step prints what it is about to do, runs it, then checks the TV before the next one. The pause between steps is under half a second. Kids videos come first. Each one is searched, opened at result 1 (or result 2 if the first hit is a mix or compilation), played for a few seconds, paused, and sent back to the launcher.
 
-The order is connect, home, volume up then restore, YouTube, Netflix, Prime Video, Hotstar, SonyLIV, JioCinema, back, a short YouTube clip, pause, home, screenshot, and now playing. OK / Select is left out: on the launcher it would open whichever tile is focused.
+The order is connect, home, Cocomelon, a quieter volume for the remaining kids clips, Shubh (We Rollin), Wheels on the Bus, the ABC song, the Bath song, volume restored, then YouTube, Netflix, Prime Video, Hotstar, SonyLIV, JioCinema, back, a short Eminem clip, pause, home, screenshot, and now playing. OK / Select is left out: on the launcher it would open whichever tile is focused.
 
-YouTube draws Skip inside its own player, not as a normal Android control, so a screen dump cannot see the label. When Skip turns on, YouTube focuses it. From about four seconds in, Showtime sends OK twice a second through nine seconds, so the press lands as soon as that focus appears. An unskippable ad still has to finish. The clip is then paused and Home is opened so it does not keep playing past about ten seconds.
+YouTube draws Skip inside its own player, not as a normal Android control, so a screen dump cannot see the label. When Skip turns on, YouTube focuses it. From about four seconds in, Showtime sends OK until the real title has been up for a moment, so the press lands as soon as that focus appears. An unskippable ad still has to finish. Each clip is paused and Home is opened so it does not keep playing past about ten seconds.
 
 ---
 
@@ -213,7 +213,7 @@ Showtime, checked on the TV:
 python -m tv_remote.cli showtime
 ```
 
-**15 ok, 0 failed, 63s.** The YouTube clip is paused and the launcher is back in front before the song has been up for 10 seconds. Home, volume, Back, and all six apps were then repeated **10 times each** with **0 failures**, and the short YouTube open, pause, and stop were repeated **10 times** as well.
+**21 ok, 0 failed, 184s** on the run after Cocomelon was moved to the first video. Cocomelon, Shubh (We Rollin), Wheels on the Bus, the ABC song, and the Bath song each opened result 1, the media-session title matched that exact video, and playback was paused before the next step. Volume went 18 → 14 for the later kids clips and returned to 18. The same five titles had already matched on the pass just before that.
 
 The script checks foreground app via `dumpsys activity activities` (`mResumedActivity`), volume via `dumpsys audio`, and playback via `now_playing()`.
 

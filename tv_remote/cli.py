@@ -16,7 +16,7 @@ MENU = """
 14  Eminem on YouTube   15  Enrique on YouTube
 16  YouTube search (type anything)
 17  Skip forward 30s    18  Now playing
-19  Showtime — home, volume, every app, then a checked YouTube play
+19  Showtime — kids clips first, then every app, then a short checked play
  q  Quit
 
 One-shot: python -m tv_remote.cli showtime

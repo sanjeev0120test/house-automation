@@ -9,6 +9,13 @@ from pathlib import Path
 from tv_remote import adb, keys
 
 SHOW_QUERY = "eminem not afraid official"
+KIDS = (
+    ("Cocomelon", "cocomelon", "cocomelon"),
+    ("Shubh", "shubh we rollin", "shubh"),
+    ("Wheels on the Bus", "wheels on the bus cocomelon", "wheels"),
+    ("ABC song", "cocomelon abc song", "abc"),
+    ("Bath song", "cocomelon bath song", "bath"),
+)
 APPS = (
     ("youtube", "YouTube"),
     ("netflix", "Netflix"),
@@ -28,6 +35,7 @@ class _Run:
     ads_skipped = 0
     skip_presses = 0
     clip_started = 0.0
+    saved_volume: int | None = None
 
 
 # Just long enough to see each change. The TV confirm is the real wait.
@@ -46,12 +54,20 @@ def _titles_agree(expected: str, actual: str) -> bool:
     return any(len(word) > 4 and word in actual_l for word in words)
 
 
+def _package_match(expected: str, seen: str) -> bool:
+    if not seen:
+        return False
+    if expected == "launcher":
+        return "launcher" in seen
+    return seen == expected or seen.startswith(expected + ".")
+
+
 def _wait_foreground(expected: str, timeout: float) -> str:
     deadline = time.time() + timeout
     seen = ""
     while time.time() < deadline:
         seen = keys.foreground_package()
-        if expected in seen or (seen and seen in expected):
+        if _package_match(expected, seen):
             return seen
         time.sleep(0.35)
     raise RuntimeError(f"expected {expected}, TV was showing {seen or 'nothing readable'}")
@@ -109,6 +125,39 @@ def _volume_roundtrip() -> str:
     return f"{original} -> {raised} -> {current}"
 
 
+def _kid_quiet() -> str:
+    """Lower the volume before the kids clips, and remember where it was."""
+    original = keys.music_volume()
+    if original is None:
+        raise RuntimeError("the TV did not report music volume")
+    _Run.saved_volume = original
+    for _ in range(4):
+        if (keys.music_volume() or 0) <= 8:
+            break
+        keys.volume_down()
+        time.sleep(0.2)
+    quieter = keys.music_volume()
+    if quieter is None or quieter >= original:
+        raise RuntimeError(f"volume did not drop for kids ({original} -> {quieter})")
+    return f"quieter for the kids clips, {original} -> {quieter}"
+
+
+def _restore_volume() -> str:
+    original = _Run.saved_volume
+    if original is None:
+        raise RuntimeError("kid volume was not saved")
+    current = keys.music_volume()
+    nudges = 0
+    while current is not None and current < original and nudges < 8:
+        keys.volume_up()
+        time.sleep(0.2)
+        current = keys.music_volume()
+        nudges += 1
+    if current != original:
+        raise RuntimeError(f"volume did not return to {original} (now {current})")
+    return f"back to {current}"
+
+
 def _open_app(name: str) -> str:
     expected = keys.APPS[name]
     keys.launch_app(name, settle=0.15)
@@ -139,8 +188,12 @@ def _guard_clip() -> None:
 
 
 def _play_track() -> str:
-    """Open the track, press OK while Skip can be focused, then leave it up briefly."""
-    video_id, title = keys._first_youtube_result(SHOW_QUERY)
+    """Open the Eminem track, press OK while Skip can be focused, then leave it up briefly."""
+    return _watch(SHOW_QUERY, "eminem")
+
+
+def _watch(query: str, needle: str | None = None) -> str:
+    index, video_id, title = keys.pick_youtube_result(query, needle)
     _Run.video_id = video_id
     _Run.expected_title = title
     keys.open_youtube_video(video_id)
@@ -173,7 +226,7 @@ def _play_track() -> str:
         if matched:
             if matched_at is None:
                 matched_at = time.time()
-            if age >= 8.5 and time.time() - matched_at >= 1.2:
+            if age >= 7.5 and time.time() - matched_at >= 1.0:
                 break
         else:
             matched_at = None
@@ -181,14 +234,22 @@ def _play_track() -> str:
     else:
         actual = str(info.get("title") or "nothing")
         raise RuntimeError(f"wanted \"{title}\", TV reported \"{actual}\"")
-    _Run.skip_presses = presses
+    _Run.skip_presses += presses
     _Run.clip_started = time.time()
     if saw_other:
         _Run.ads_skipped += 1
     _guard_clip()
     actual = str(info.get("title") or title)
     ad_bit = ", ad title cleared after OK" if saw_other else ", OK armed for Skip"
-    return f"\"{actual}\" for a few seconds ({presses} OK presses{ad_bit})"
+    return f"result {index} \"{actual}\" for a few seconds ({presses} OK presses{ad_bit})"
+
+
+def _kid_clip(query: str, needle: str) -> str:
+    """Search, open result 1 or 2, play briefly, then pause and leave it."""
+    detail = _watch(query, needle)
+    paused = _pause()
+    stopped = _stop_and_home()
+    return f"{detail}; {paused}; {stopped}"
 
 
 def _pause() -> str:
@@ -259,12 +320,37 @@ def run() -> int:
     steps: list[tuple[str, str, object]] = [
         ("Connect", "Join the TV over ADB and read its model.", _connect),
         ("Home", "Open the launcher and confirm it is the screen in front.", _home),
-        (
-            "Volume",
-            "Raise music volume, confirm the TV reports the change, then put it back.",
-            _volume_roundtrip,
-        ),
     ]
+    label, query, needle = KIDS[0]
+    steps.append(
+        (
+            label,
+            f"Search YouTube for \"{query}\" first, open result 1 or 2, play it for a few seconds, then stop.",
+            lambda query=query, needle=needle: _kid_clip(query, needle),
+        )
+    )
+    steps.append(
+        (
+            "Kid volume",
+            "Lower the music volume for the rest of the kids videos, and confirm the TV reports the drop.",
+            _kid_quiet,
+        )
+    )
+    for label, query, needle in KIDS[1:]:
+        steps.append(
+            (
+                label,
+                f"Search YouTube for \"{query}\", open result 1 or 2, play it for a few seconds, then stop.",
+                lambda query=query, needle=needle: _kid_clip(query, needle),
+            )
+        )
+    steps.append(
+        (
+            "Restore volume",
+            "Put the music volume back where it was before the kids clips.",
+            _restore_volume,
+        )
+    )
     for name, label in APPS:
         steps.append(
             (
