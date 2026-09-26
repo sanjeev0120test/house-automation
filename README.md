@@ -90,7 +90,7 @@ cp config/tv.json.example config/tv.json
 ./scripts/check_connection.ps1
 ```
 
-Expected: ping succeeds, TCP port open, `adb devices` shows `YOUR_TV_IP:5555    device`.
+Expected: TCP port 5555 is open and `adb devices` shows `YOUR_TV_IP:5555    device`. Ping can fail even when that port is open.
 
 4. Start the remote:
 
@@ -111,7 +111,7 @@ Type **1–19** to act, **q** to quit. Option **19** is the same sequence as `py
 | 3 | Volume up | `input keyevent 24` |
 | 4 | Volume down | `input keyevent 25` |
 | 5 | OK / Select | `input keyevent 23` |
-| 6 | Open YouTube | `monkey -p com.google.android.youtube.tv …` |
+| 6 | Open YouTube | `monkey -p com.google.android.youtube.tv …` (can show the account picker) |
 | 7 | Open Netflix | `monkey -p com.netflix.ninja …` |
 | 8 | Open Prime Video | `monkey -p com.amazon.amazonvideo.livingroom …` |
 | 9 | Open Hotstar | `monkey -p in.startv.hotstar …` |
@@ -122,12 +122,12 @@ Type **1–19** to act, **q** to quit. Option **19** is the same sequence as `py
 | 14 | Eminem on YouTube | YouTube search preset → first result |
 | 15 | Enrique on YouTube | YouTube search preset → first result |
 | 16 | YouTube search | Prompt for query → first result |
-| 17 | Skip forward ~30 s | Reopen the video 30 s ahead (`youtu.be?t=`). Key 272 only if this process did not open it |
+| 17 | Skip forward ~30 s | Reopen the video 30 s ahead (`youtu.be?t=`) when this process opened it and YouTube is in front. Otherwise key 272 |
 | 18 | Now playing | Parse `dumpsys media_session` for active playback |
 | 19 | Showtime | Cocomelon first, volume while that video plays, then the other kids clips and apps |
 | q | Quit | Exit CLI |
 
-Options **14–16** print `Playing first result for: …` instead of `OK: …`.
+Options **14–16** print `Playing first result for: …` instead of `OK: …`. That line names the search, not the row. The video opened is the first regular result, or the next one when the top hit is a mix, compilation, hour-long video, or playlist. Option **6** opens the YouTube app itself. Showtime does not; it opens a watch URL, so the account picker stays closed.
 
 ---
 
@@ -137,11 +137,11 @@ Options **14–16** print `Playing first result for: …` instead of `OK: …`.
 python -m tv_remote.cli showtime
 ```
 
-Each step prints what it is about to do, runs it, then checks the TV before the next one. The pause between steps is under half a second. Kids videos come first. Each one is searched, opened at result 1 (or result 2 if the first hit is a mix or compilation), played for a few seconds, paused, and sent back to the launcher.
+Each step prints what it is about to do, runs it, then checks the TV before the next one. The pause between steps is under half a second. Kids videos come first. Each one is searched, Shorts are skipped, and the first regular result is opened — or the next result when that title is a mix, compilation, hour-long video, or playlist. It stays up until about 7.5 seconds after open and that title has been playing for about a second, then it is paused and sent back to the launcher.
 
-The order is connect, home, then Cocomelon. That video is opened directly, and while it is playing the volume goes up and back down. Then Shubh (We Rollin), Wheels on the Bus, the ABC song, and the Bath song. After those: Netflix, Prime Video, Hotstar, SonyLIV, JioCinema, back, a short Eminem clip, pause, home, screenshot, and now playing. The YouTube app home and account picker are not opened. OK / Select is left out: on the launcher it would open whichever tile is focused.
+The order is connect, home, then Cocomelon. That video is opened directly, and while it is playing the volume goes up and back down. If the level is already near the top, it goes down and back up instead. Then Shubh (We Rollin), Wheels on the Bus, the ABC song, and the Bath song. After those: Netflix, Prime Video, Hotstar, SonyLIV, JioCinema, back, a short Eminem clip, pause, home, screenshot, and now playing. The YouTube app home and account picker are not opened. OK / Select is left out: on the launcher it would open whichever tile is focused.
 
-YouTube draws Skip inside its own player, not as a normal Android control, so a screen dump cannot see the label. When Skip turns on, YouTube focuses it. From about four seconds in, Showtime sends OK until the real title has been up for a moment, so the press lands as soon as that focus appears. An unskippable ad still has to finish. Each clip is paused and Home is opened so it does not keep playing past about ten seconds.
+YouTube draws Skip inside its own player, not as a normal Android control, so a screen dump cannot see the label. When Skip turns on, YouTube focuses it. From about four seconds in, Showtime sends OK until the opened title has been playing for about a second, so the press lands as soon as that focus appears. An unskippable ad still has to finish. The wait stops at about 22 seconds if the title never appears. Cocomelon stays up a little longer than the other clips because volume is changed while that video is still playing. After the volume is back, it is paused and Home is opened.
 
 ---
 
@@ -159,7 +159,7 @@ YouTube draws Skip inside its own player, not as a normal Android control, so a 
        │
        │  YouTube search only:
        ▼
-  HTTP GET youtube.com/results  →  extract first videoId  →  open watch URL on TV
+  HTTP GET youtube.com/results  →  first regular video, or the next if it is a mix  →  open watch URL on TV
 ```
 
 | Module | Responsibility |
@@ -167,9 +167,9 @@ YouTube draws Skip inside its own player, not as a normal Android control, so a 
 | `tv_remote/adb.py` | Load `config/tv.json`, run `adb`, connect, keyevent, shell, tap, pull |
 | `tv_remote/keys.py` | Remote actions, app launch, YouTube resolve/play, ad-skip thread, now playing |
 | `tv_remote/cli.py` | Numbered menu loop and error handling |
-| `tv_remote/showtime.py` | One checked pass: home, volume, apps, YouTube |
+| `tv_remote/showtime.py` | Kids clips first, volume during Cocomelon, then the other apps, then a short clip |
 | `scripts/check_connection.ps1` | Ping, TCP port, `adb connect`, `adb devices` |
-| `scripts/validate_remote.py` | Automated pass/fail test for all menu options |
+| `scripts/validate_remote.py` | Automated pass/fail test for menu options 1–18 |
 
 ---
 
@@ -182,18 +182,19 @@ YouTube draws Skip inside its own player, not as a normal Android control, so a 
 **Current behaviour (fixed):**
 
 1. Computer fetches `https://www.youtube.com/results?search_query=…`
-2. Parses `ytInitialData` JSON for the first `videoRenderer.videoId`
-3. Opens `https://www.youtube.com/watch?v=VIDEO_ID` on the TV via `am start -a android.intent.action.VIEW`
+2. Parses `ytInitialData` JSON for `videoRenderer` entries, skipping Shorts and empty titles
+3. Takes the first of those, or the next one when that title is a mix, compilation, hour-long video, or playlist. Showtime uses the same choice
+4. Opens `https://www.youtube.com/watch?v=VIDEO_ID` on the TV via `am start -a android.intent.action.VIEW`
 
-This plays the same top result YouTube shows in a browser search, without DPAD navigation.
+No DPAD navigation. The printed line still says `Playing first result for: …` even when step 3 moves to the next video.
 
 ### Ad skip
 
 YouTube on this TV draws the Skip control inside the video player. `uiautomator dump` returns an empty player view, so there is no label to tap.
 
-When Skip becomes available, YouTube focuses it. Sending OK (`keyevent 23`) activates that focused control. Options **14–16** do this about twice a second for the first 12 seconds, and keep doing it if the media title is not the video that was opened. Showtime does the same during its short clip.
+When Skip becomes available, YouTube focuses it. Sending OK (`keyevent 23`) activates that focused control. Options **14–16** start a background watcher that sends OK about every half second for the first 12 seconds, and keeps sending it until the media title matches, for at most 18 seconds. Showtime does not start that watcher. It sends OK itself from about four seconds in until the opened title has been playing for about a second.
 
-**Limitation:** an unskippable ad has no Skip control, so OK cannot dismiss it. The clip is paused and the launcher is opened within about 10 seconds of the real video starting.
+**Limitation:** an unskippable ad has no Skip control, so OK cannot dismiss it. Showtime then pauses and opens the launcher. That can take up to about 22 seconds if the real title is slow to appear.
 
 ---
 
@@ -215,7 +216,7 @@ python -m tv_remote.cli showtime
 
 **18 ok, 0 failed, 170s.** Cocomelon opened result 1 directly (no account picker). While that video was playing, volume went 18 → 21 → 18 and the same title was still playing. Shubh (We Rollin), Wheels on the Bus, the ABC song, and the Bath song each opened result 1, matched on the TV, and were paused. Netflix, Prime Video, Hotstar, SonyLIV, and JioCinema came to the front. The YouTube app home is not opened.
 
-The script checks foreground app via `dumpsys activity activities` (`mResumedActivity`), volume via `dumpsys audio`, and playback via `now_playing()`.
+The menu script records 17 checks for options 1–18 (volume up and down are one check). It reads the foreground app from `dumpsys activity activities` (`mResumedActivity`) and volume from `dumpsys audio`. Showtime reads the focused window from `dumpsys window` (`mCurrentFocus`) and music volume from `media volume --stream 3 --get`. Both use `now_playing()` for playback.
 
 Quick connection check only:
 
@@ -301,7 +302,7 @@ Each item below was reproduced on hardware, diagnosed with ADB, and fixed in cod
 | Launch leanback apps | `monkey -p PACKAGE -c android.intent.category.LEANBACK_LAUNCHER 1` |
 | Deep-link into content | `am start -a android.intent.action.VIEW -d "URL" PACKAGE` |
 | Query playback state | `dumpsys media_session` |
-| Query foreground app | `dumpsys activity activities` |
+| Query foreground app | `dumpsys window` (`mCurrentFocus`), then `dumpsys activity activities` |
 | Screen capture | `screencap` + `adb pull` |
 | UI inspection / tap | `uiautomator dump` + `input tap X Y` |
 | Background polling | Python `threading` daemon for ad-skip watcher |
@@ -344,7 +345,7 @@ Update `port` in `config/tv.json` to the **debug port** (not the pairing port).
 
 - `config/tv.json` is **gitignored** — never commit your TV IP, pairing codes, or WiFi details.
 - ADB access requires physical approval on the TV ("Always allow this computer").
-- All traffic stays on your local network; no telemetry or external API except YouTube search HTTP from the computer during options 14–16.
+- All traffic stays on your local network; no telemetry or external API except YouTube search HTTP from the computer during options 14–16 and during Showtime.
 - `tools/platform-tools/` is gitignored; download platform-tools from the official Android developer site.
 
 ---
@@ -360,7 +361,7 @@ Update `port` in `config/tv.json` to the **debug port** (not the pairing port).
 | App launch fails | Run `adb shell pm list packages \| grep APPNAME`; update `APPS` in `keys.py` |
 | JioCinema stuck | Confirm activity: `adb shell cmd package resolve-activity --brief com.jio.media.stb.ondemand` |
 | YouTube plays wrong video | Should not occur with watch-URL flow; run `python scripts/validate_remote.py` |
-| Ad not skipped | Skip button may not appear in UI dump on YouTube TV; unskippable ads cannot be bypassed |
+| Ad not skipped | YouTube focuses Skip and OK presses it. A screen dump on this TV usually has no Skip label. An unskippable ad cannot be dismissed |
 | Screenshot is black | HDCP on streaming apps — expected |
 | Unicode decode error | Fixed in `adb.py`; pull latest code |
 
