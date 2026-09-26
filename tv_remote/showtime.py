@@ -35,7 +35,6 @@ class _Run:
     ads_skipped = 0
     skip_presses = 0
     clip_started = 0.0
-    saved_volume: int | None = None
 
 
 # Just long enough to see each change. The TV confirm is the real wait.
@@ -88,74 +87,57 @@ def _home() -> str:
     return f"launcher in front ({package})"
 
 
-def _volume_roundtrip() -> str:
+def _assert_playing() -> str:
+    info = keys.playback()
+    actual = str(info.get("title") or "")
+    if info.get("state") not in (3, 6) or not _titles_agree(_Run.expected_title, actual):
+        raise RuntimeError(
+            f"expected the video to be playing, TV reported "
+            f"state={info.get('state')} title={actual or 'nothing'}"
+        )
+    package = keys.foreground_package()
+    if "youtube" not in package:
+        raise RuntimeError(f"YouTube was not in front ({package or 'nothing'})")
+    return actual
+
+
+def _volume_while_playing() -> str:
+    """Raise and lower volume only after the YouTube video is already playing."""
+    title = _assert_playing()
     original = keys.music_volume()
     if original is None:
         raise RuntimeError("the TV did not report music volume")
     if original >= 97:
         for _ in range(3):
             keys.volume_down()
-            time.sleep(0.2)
+            time.sleep(0.15)
         dipped = keys.music_volume()
+        _assert_playing()
         for _ in range(3):
             keys.volume_up()
-            time.sleep(0.2)
+            time.sleep(0.15)
         restored = keys.music_volume()
-        if dipped is None or dipped >= original:
-            raise RuntimeError(f"volume stayed at {original}")
-        if restored != original:
-            raise RuntimeError(f"volume did not return to {original} (now {restored})")
-        return f"{original} -> {dipped} -> {restored}"
+        _assert_playing()
+        if dipped is None or dipped >= original or restored != original:
+            raise RuntimeError(f"volume while playing failed ({original} -> {dipped} -> {restored})")
+        return f"while \"{title}\" played, {original} -> {dipped} -> {restored}"
 
     for _ in range(3):
         keys.volume_up()
-        time.sleep(0.2)
+        time.sleep(0.15)
     raised = keys.music_volume()
+    _assert_playing()
     current = raised
     nudges = 0
     while current is not None and current > original and nudges < 8:
         keys.volume_down()
-        time.sleep(0.2)
+        time.sleep(0.15)
         current = keys.music_volume()
         nudges += 1
-    if raised is None or raised <= original:
-        raise RuntimeError(f"volume did not rise ({original} -> {raised})")
-    if current != original:
-        raise RuntimeError(f"volume did not return ({original} -> {raised} -> {current})")
-    return f"{original} -> {raised} -> {current}"
-
-
-def _kid_quiet() -> str:
-    """Lower the volume before the kids clips, and remember where it was."""
-    original = keys.music_volume()
-    if original is None:
-        raise RuntimeError("the TV did not report music volume")
-    _Run.saved_volume = original
-    for _ in range(4):
-        if (keys.music_volume() or 0) <= 8:
-            break
-        keys.volume_down()
-        time.sleep(0.2)
-    quieter = keys.music_volume()
-    if quieter is None or quieter >= original:
-        raise RuntimeError(f"volume did not drop for kids ({original} -> {quieter})")
-    return f"quieter for the kids clips, {original} -> {quieter}"
-
-
-def _restore_volume() -> str:
-    original = _Run.saved_volume
-    if original is None:
-        raise RuntimeError("kid volume was not saved")
-    current = keys.music_volume()
-    nudges = 0
-    while current is not None and current < original and nudges < 8:
-        keys.volume_up()
-        time.sleep(0.2)
-        current = keys.music_volume()
-        nudges += 1
-    if current != original:
-        raise RuntimeError(f"volume did not return to {original} (now {current})")
-    return f"back to {current}"
+    still = _assert_playing()
+    if raised is None or raised <= original or current != original:
+        raise RuntimeError(f"volume while playing failed ({original} -> {raised} -> {current})")
+    return f"while \"{still}\" played, {original} -> {raised} -> {current}"
 
 
 def _open_app(name: str) -> str:
@@ -180,11 +162,6 @@ def _back_from_last_app() -> str:
                 return f"left {previous}, now {package}"
             time.sleep(0.35)
     raise RuntimeError(f"Back did not leave {previous}")
-
-
-def _guard_clip() -> None:
-    if _Run.clip_started and time.time() - _Run.clip_started > 10:
-        raise RuntimeError("the YouTube clip ran longer than 10 seconds")
 
 
 def _play_track() -> str:
@@ -235,32 +212,31 @@ def _watch(query: str, needle: str | None = None) -> str:
         actual = str(info.get("title") or "nothing")
         raise RuntimeError(f"wanted \"{title}\", TV reported \"{actual}\"")
     _Run.skip_presses += presses
-    _Run.clip_started = time.time()
     if saw_other:
         _Run.ads_skipped += 1
-    _guard_clip()
     actual = str(info.get("title") or title)
     ad_bit = ", ad title cleared after OK" if saw_other else ", OK armed for Skip"
     return f"result {index} \"{actual}\" for a few seconds ({presses} OK presses{ad_bit})"
 
 
-def _kid_clip(query: str, needle: str) -> str:
+def _kid_clip(query: str, needle: str, with_volume: bool = False) -> str:
     """Search, open result 1 or 2, play briefly, then pause and leave it."""
     detail = _watch(query, needle)
+    volume = _volume_while_playing() if with_volume else ""
     paused = _pause()
     stopped = _stop_and_home()
+    if volume:
+        return f"{detail}; {volume}; {paused}; {stopped}"
     return f"{detail}; {paused}; {stopped}"
 
 
 def _pause() -> str:
-    _guard_clip()
     keys.media_pause()
     return _wait_state(2, "paused")
 
 
 def _stop_and_home() -> str:
     """Leave the clip so it does not keep playing."""
-    _guard_clip()
     keys.media_pause()
     keys.home()
     package = _wait_foreground("launcher", 8)
@@ -325,15 +301,8 @@ def run() -> int:
     steps.append(
         (
             label,
-            f"Search YouTube for \"{query}\" first, open result 1 or 2, play it for a few seconds, then stop.",
-            lambda query=query, needle=needle: _kid_clip(query, needle),
-        )
-    )
-    steps.append(
-        (
-            "Kid volume",
-            "Lower the music volume for the rest of the kids videos, and confirm the TV reports the drop.",
-            _kid_quiet,
+            f"Search YouTube for \"{query}\" first and open the video directly. While it is playing, raise the volume, lower it back, then stop. The account picker is not opened.",
+            lambda query=query, needle=needle: _kid_clip(query, needle, with_volume=True),
         )
     )
     for label, query, needle in KIDS[1:]:
@@ -344,14 +313,9 @@ def run() -> int:
                 lambda query=query, needle=needle: _kid_clip(query, needle),
             )
         )
-    steps.append(
-        (
-            "Restore volume",
-            "Put the music volume back where it was before the kids clips.",
-            _restore_volume,
-        )
-    )
     for name, label in APPS:
+        if name == "youtube":
+            continue
         steps.append(
             (
                 label,
